@@ -72,7 +72,13 @@ ytm auth
 
 ## Authentication
 
-To access your YouTube Music library and playlists, run `ytm auth`. The tool will attempt to extract cookies from your browser automatically. If that fails, use `ytm auth --manual` to paste request headers manually.
+Authentication is only needed for library features (liked songs, playlists, rating). Search and playback work without auth.
+
+To authenticate, run `ytm auth` and follow the prompts:
+1. A browser will open to YouTube Music
+2. Open DevTools (F12) → Network tab
+3. Refresh the page and click any request to music.youtube.com
+4. Copy the Request Headers and paste into the terminal
 
 Credentials are stored in `~/.config/ytm-cli/`.
 
