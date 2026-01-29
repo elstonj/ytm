@@ -20,6 +20,14 @@ A command-line interface for YouTube Music.
 
 ## Installation
 
+### Quick Install
+
+```bash
+curl -sSL https://raw.githubusercontent.com/elstonj/ytm/main/install.sh | bash
+```
+
+### Manual Install
+
 ```bash
 # Install mpv (required for playback)
 # Ubuntu/Debian:
@@ -27,8 +35,10 @@ sudo apt install mpv
 # macOS:
 brew install mpv
 
-# Install the CLI
-pip install -e .
+# Clone and install
+git clone https://github.com/elstonj/ytm.git
+cd ytm
+pip install .
 ```
 
 ## Usage
