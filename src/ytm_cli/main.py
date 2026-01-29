@@ -12,14 +12,12 @@ import select
 import sys
 import termios
 import tty
-from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from ytm_cli.api import YouTubeMusicAPI
-from ytm_cli.browser_auth import authenticate_from_browser
 from ytm_cli.player import Player
 
 
@@ -122,6 +120,7 @@ def play_with_progress(player: Player, track: dict, api: YouTubeMusicAPI, radio:
                     key = keys.get_key(timeout=0.3)
 
                     if key == 'ctrl+c':
+                        print()  # New line after progress bar
                         player.stop()
                         raise KeyboardInterrupt
                     elif key == ' ':
@@ -265,6 +264,7 @@ def play(query: str):
                 key = keys.get_key(timeout=0.3)
 
                 if key == 'ctrl+c':
+                    print()  # New line after progress bar
                     break
                 elif key == ' ':
                     if paused:
@@ -289,58 +289,29 @@ def play(query: str):
 
 
 @app.command()
-def auth(
-    browser: Optional[str] = typer.Option(
-        None, "--browser", "-b", help="Browser to extract cookies from (chrome, firefox, chromium)"
-    ),
-    manual: bool = typer.Option(False, "--manual", "-m", help="Use manual header paste method"),
-):
-    """Authenticate with YouTube Music to access your library."""
-    from ytm_cli.api import YouTubeMusicAPI
+def auth():
+    """Authenticate with YouTube Music (required for library access)."""
+    console.print("[bold]YouTube Music Authentication[/bold]\n")
+    console.print("[dim]Note: Auth is only needed for library features (liked songs, playlists, rating).[/dim]")
+    console.print("[dim]Search and playback work without auth.[/dim]")
+    console.print("A browser will open. Then:")
+    console.print("  1. Sign in to YouTube Music if needed")
+    console.print("  2. Press [bold]F12[/bold] → [bold]Network[/bold] tab")
+    console.print("  3. Refresh the page (F5)")
+    console.print("  4. Click any request to [cyan]music.youtube.com[/cyan]")
+    console.print("  5. Scroll to [bold]Request Headers[/bold], select all, copy")
+    console.print("  6. Paste here and press Enter twice\n")
 
-    auth_file = YouTubeMusicAPI.AUTH_FILE
-
-    # Remove existing auth file to avoid loading stale credentials
-    if auth_file.exists():
-        auth_file.unlink()
-
-    if manual:
-        console.print("[bold]YouTube Music Authentication (Manual)[/bold]\n")
-        console.print("To authenticate, you need to copy request headers from your browser:")
-        console.print("1. Open https://music.youtube.com in your browser")
-        console.print("2. Open Developer Tools (F12) → Network tab")
-        console.print("3. Click on any request to music.youtube.com")
-        console.print("4. Find 'Request Headers' and copy everything")
-        console.print("5. Paste below when prompted\n")
-        api = YouTubeMusicAPI()
-        api.authenticate()
-    else:
-        # Auto-detect browser if not specified
-        if not browser:
-            for b in ["chrome", "firefox", "chromium"]:
-                try:
-                    console.print(f"[dim]Trying {b}...[/dim]")
-                    authenticate_from_browser(b, auth_file)
-                    browser = b
-                    break
-                except Exception:
-                    continue
-
-            if not browser:
-                console.print("[red]Could not extract cookies from any browser.[/red]")
-                console.print("Make sure you're logged into YouTube Music, or use --manual")
-                raise typer.Exit(1)
-        else:
-            try:
-                authenticate_from_browser(browser, auth_file)
-            except Exception as e:
-                console.print(f"[red]Failed to extract cookies from {browser}: {e}[/red]")
-                raise typer.Exit(1)
-
-        console.print(f"[green]Extracted cookies from {browser}[/green]")
-
-    console.print("[green]Authentication successful![/green]")
-    console.print(f"Credentials saved to: {auth_file}")
+    try:
+        YouTubeMusicAPI.authenticate()
+        console.print("\n[green]Authentication successful![/green]")
+        console.print(f"Credentials saved to: {YouTubeMusicAPI.AUTH_FILE}")
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Authentication cancelled.[/yellow]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"\n[red]Authentication failed: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -458,6 +429,7 @@ def _play_playlist_interactive(player: Player, api: YouTubeMusicAPI, tracks: lis
                     key = keys.get_key(timeout=0.3)
 
                     if key == 'ctrl+c':
+                        print()  # New line after progress bar
                         player.stop()
                         raise KeyboardInterrupt
                     elif key == ' ':

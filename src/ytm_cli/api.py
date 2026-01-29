@@ -11,13 +11,16 @@
 from pathlib import Path
 from typing import Any
 
-from ytmusicapi import YTMusic, setup
+from ytmusicapi import YTMusic
+
+from ytm_cli.auth import run_auth_flow
 
 
 class YouTubeMusicAPI:
     """Wrapper around ytmusicapi for YouTube Music operations."""
 
-    AUTH_FILE = Path.home() / ".config" / "ytm-cli" / "headers.json"
+    CONFIG_DIR = Path.home() / ".config" / "ytm-cli"
+    AUTH_FILE = CONFIG_DIR / "headers.json"
 
     def __init__(self) -> None:
         self._ytmusic: YTMusic | None = None
@@ -27,8 +30,12 @@ class YouTubeMusicAPI:
     def _load_client(self) -> None:
         """Load the YTMusic client, with auth if available."""
         if self.AUTH_FILE.exists():
-            self._ytmusic = YTMusic(str(self.AUTH_FILE))
-            self._authenticated = True
+            try:
+                self._ytmusic = YTMusic(str(self.AUTH_FILE))
+                self._authenticated = True
+            except Exception:
+                # If auth fails, fall back to unauthenticated
+                self._ytmusic = YTMusic()
         else:
             self._ytmusic = YTMusic()
 
@@ -36,14 +43,13 @@ class YouTubeMusicAPI:
         """Check if the user is authenticated."""
         return self._authenticated
 
-    def authenticate(self) -> None:
-        """Run browser headers auth flow to authenticate with YouTube Music.
+    @classmethod
+    def authenticate(cls) -> None:
+        """Run browser-based authentication flow.
 
-        Prompts user to paste request headers from browser dev tools.
+        Opens YouTube Music in browser and prompts user to paste request headers.
         """
-        self.AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-        setup(filepath=str(self.AUTH_FILE))
-        self._load_client()
+        run_auth_flow(cls.AUTH_FILE)
 
     def search(
         self, query: str, filter_type: str | None = "songs", limit: int = 10
