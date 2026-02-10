@@ -89,17 +89,19 @@ class Player:
             msg = json.dumps({"command": command}) + "\n"
             self._socket.sendall(msg.encode())  # type: ignore
 
-            response = b""
+            buf = b""
             while True:
                 chunk = self._socket.recv(4096)  # type: ignore
                 if not chunk:
                     break
-                response += chunk
-                if b"\n" in chunk:
-                    break
-
-            if response:
-                return json.loads(response.decode().strip())
+                buf += chunk
+                # Process complete lines; mpv sends async event lines
+                # before the command response, so skip those.
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    parsed = json.loads(line)
+                    if "error" in parsed:
+                        return parsed
         except (json.JSONDecodeError, OSError):
             self._socket = None
         return None
