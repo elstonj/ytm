@@ -299,8 +299,14 @@ class Player:
         return self._get_property("audio-device") or "auto"
 
     def set_audio_device(self, name: str) -> bool:
-        """Switch audio output device live."""
-        return self._set_property("audio-device", name)
+        """Switch audio output device live and set as system default."""
+        result = self._set_property("audio-device", name)
+        # Set as system default so hardware volume keys follow
+        if name.startswith("pulse/"):
+            sink = name[len("pulse/"):]
+            subprocess.run(["pactl", "set-default-sink", sink],
+                           capture_output=True)
+        return result
 
     def wait(self) -> None:
         """Wait for current track to finish playing."""
