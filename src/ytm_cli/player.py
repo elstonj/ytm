@@ -75,7 +75,7 @@ class Player:
             self._socket.settimeout(1.0)
             self._socket.connect(str(self._socket_path))
             return True
-        except (socket.error, OSError):
+        except OSError:
             self._socket = None
             return False
 
@@ -100,7 +100,7 @@ class Player:
 
             if response:
                 return json.loads(response.decode().strip())
-        except (socket.error, json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError):
             self._socket = None
         return None
 
@@ -277,6 +277,28 @@ class Player:
         """Get current volume (0-100)."""
         vol = self._get_property("volume")
         return int(vol) if vol is not None else 100
+
+    def get_audio_devices(self) -> list[dict[str, str]]:
+        """Get list of available audio output devices.
+
+        Returns only auto + PulseAudio/PipeWire sinks (filters out raw ALSA).
+        """
+        devices = self._get_property("audio-device-list")
+        if not devices:
+            return []
+        return [
+            {"name": d["name"], "description": d["description"]}
+            for d in devices
+            if d["name"] == "auto" or d["name"].startswith("pulse/")
+        ]
+
+    def get_audio_device(self) -> str:
+        """Get current audio output device name."""
+        return self._get_property("audio-device") or "auto"
+
+    def set_audio_device(self, name: str) -> bool:
+        """Switch audio output device live."""
+        return self._set_property("audio-device", name)
 
     def wait(self) -> None:
         """Wait for current track to finish playing."""

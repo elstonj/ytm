@@ -81,14 +81,49 @@ def display_tracks(tracks: list, title: str = "Results") -> None:
     console.print(table)
 
 
-def play_with_progress(player: Player, track: dict, api: YouTubeMusicAPI, radio: bool = False) -> str | None:
-    """Play a track with progress display. Returns 'search' if user wants to search, None otherwise."""
+def _handle_output_device(player: Player, keys: KeyReader) -> None:
+    """Show audio output device list and let user pick one."""
+    devices = player.get_audio_devices()
+    if not devices:
+        console.print("\n[red]No audio devices available[/red]")
+        return
+
+    current = player.get_audio_device()
+    console.print("\n[bold] Audio Output:[/bold]")
+    for i, dev in enumerate(devices, 1):
+        marker = " ◄" if dev["name"] == current else ""
+        label = dev["description"] if dev["name"] != "auto" else "Autoselect device"
+        console.print(f"  [cyan]{i}.[/cyan] {label}{marker}")
+    console.print("[dim] Select [1-9]:[/dim]", end=" ")
+
+    key = keys.get_key(timeout=5.0)
+    if key and key.isdigit():
+        idx = int(key) - 1
+        if 0 <= idx < len(devices):
+            dev = devices[idx]
+            if player.set_audio_device(dev["name"]):
+                label = dev["description"] if dev["name"] != "auto" else "Autoselect device"
+                console.print(f"\n[green]Switched to: {label}[/green]")
+            else:
+                console.print("\n[red]Failed to switch device[/red]")
+            return
+    console.print()
+
+
+def play_with_progress(
+    player: Player, track: dict, api: YouTubeMusicAPI, radio: bool = False,
+) -> str | None:
+    """Play a track with progress display.
+
+    Returns 'search' if user wants to search, None otherwise.
+    """
     video_id = track.get("videoId")
     if not video_id:
         console.print("[red]Invalid track[/red]")
         return None
 
-    console.print(f"\n[green]▶ Now Playing:[/green] {track['title']} - {track.get('artist', 'Unknown')}")
+    artist = track.get('artist', 'Unknown')
+    console.print(f"\n[green]▶ Now Playing:[/green] {track['title']} - {artist}")
 
     if radio:
         console.print("[dim]Loading radio (similar songs)...[/dim]")
@@ -101,7 +136,10 @@ def play_with_progress(player: Player, track: dict, api: YouTubeMusicAPI, radio:
     queue_index = 0
     paused = False
 
-    console.print("[dim]Controls: space=pause  n=next  p=prev  +=like  -=dislike  /=search  Ctrl+C=quit[/dim]")
+    console.print(
+        "[dim]Controls: space=pause  n=next  p=prev  +=like"
+        "  -=dislike  o=output  /=search  Ctrl+C=quit[/dim]"
+    )
 
     try:
         with KeyReader() as keys:
@@ -109,7 +147,11 @@ def play_with_progress(player: Player, track: dict, api: YouTubeMusicAPI, radio:
                 current = queue[queue_index]
                 vid = current.get("videoId")
 
-                console.print(f"\n[cyan]({queue_index + 1}/{len(queue)})[/cyan] {current['title']} - {current.get('artist', 'Unknown')}")
+                artist = current.get('artist', 'Unknown')
+                pos = f"{queue_index + 1}/{len(queue)}"
+                console.print(
+                    f"\n[cyan]({pos})[/cyan] {current['title']} - {artist}"
+                )
 
                 player.play(vid)
                 paused = False
@@ -161,6 +203,8 @@ def play_with_progress(player: Player, track: dict, api: YouTubeMusicAPI, radio:
                         player.stop()
                         console.print("\n")
                         return 'search'
+                    elif key == 'o':
+                        _handle_output_device(player, keys)
 
                     # Update progress display
                     position, duration = player.get_progress()
@@ -168,7 +212,9 @@ def play_with_progress(player: Player, track: dict, api: YouTubeMusicAPI, radio:
                         pct = int((position / duration) * 40)
                         bar = "█" * pct + "░" * (40 - pct)
                         icon = "⏸" if paused else "▶"
-                        print(f"\r{icon} [{bar}] {format_time(position)}/{format_time(duration)}  ", end="", flush=True)
+                        elapsed = format_time(position)
+                        total = format_time(duration)
+                        print(f"\r{icon} [{bar}] {elapsed}/{total}  ", end="", flush=True)
                 else:
                     # Song finished naturally
                     print()  # New line after progress
@@ -256,6 +302,7 @@ def play(query: str):
 
     try:
         player.play(video_id)
+        console.print("[dim]Controls: space=pause  o=output  Ctrl+C=quit[/dim]")
 
         # Simple progress display with pause support
         with KeyReader() as keys:
@@ -273,13 +320,17 @@ def play(query: str):
                     else:
                         player.pause()
                         paused = True
+                elif key == 'o':
+                    _handle_output_device(player, keys)
 
                 position, duration = player.get_progress()
                 if duration > 0:
                     pct = int((position / duration) * 40)
                     bar = "█" * pct + "░" * (40 - pct)
                     icon = "⏸" if paused else "▶"
-                    print(f"\r{icon} [{bar}] {format_time(position)}/{format_time(duration)}  ", end="", flush=True)
+                    elapsed = format_time(position)
+                    total = format_time(duration)
+                    print(f"\r{icon} [{bar}] {elapsed}/{total}  ", end="", flush=True)
 
         print()  # New line after progress
     except Exception as e:
@@ -292,7 +343,10 @@ def play(query: str):
 def auth():
     """Authenticate with YouTube Music (required for library access)."""
     console.print("[bold]YouTube Music Authentication[/bold]\n")
-    console.print("[dim]Note: Auth is only needed for library features (liked songs, playlists, rating).[/dim]")
+    console.print(
+        "[dim]Note: Auth is only needed for library features"
+        " (liked songs, playlists, rating).[/dim]"
+    )
     console.print("[dim]Search and playback work without auth.[/dim]")
     console.print("A browser will open. Then:")
     console.print("  1. Sign in to YouTube Music if needed")
@@ -366,7 +420,8 @@ def library():
                     else:
                         console.print("[yellow]Playlist is empty.[/yellow]")
                 else:
-                    console.print(f"[red]Please enter a number between 1 and {len(playlists) + 1}[/red]")
+                    max_num = len(playlists) + 1
+                    console.print(f"[red]Please enter a number between 1 and {max_num}[/red]")
                     continue
 
                 show_library()
@@ -379,9 +434,14 @@ def library():
         player.stop()
 
 
-def _play_playlist_interactive(player: Player, api: YouTubeMusicAPI, tracks: list, name: str) -> None:
+def _play_playlist_interactive(
+    player: Player, api: YouTubeMusicAPI, tracks: list, name: str,
+) -> None:
     """Play a playlist interactively with number selection."""
-    console.print(f"\n[dim]Enter a track number to start from, 'a' to play all, or Enter to go back[/dim]")
+    console.print(
+        "\n[dim]Enter a track number to start from,"
+        " 'a' to play all, or Enter to go back[/dim]"
+    )
 
     while True:
         choice = console.input("[bold]Play #:[/bold] ").strip().lower()
@@ -409,7 +469,10 @@ def _play_playlist_interactive(player: Player, api: YouTubeMusicAPI, tracks: lis
         paused = False
 
         console.print(f"\n[green]Playing {name}[/green] ({len(queue)} tracks)")
-        console.print("[dim]Controls: space=pause  n=next  p=prev  +=like  -=dislike  Ctrl+C=quit[/dim]")
+        console.print(
+            "[dim]Controls: space=pause  n=next  p=prev  +=like"
+            "  -=dislike  o=output  Ctrl+C=quit[/dim]"
+        )
 
         with KeyReader() as keys:
             while queue_index < len(queue):
@@ -465,6 +528,8 @@ def _play_playlist_interactive(player: Player, api: YouTubeMusicAPI, tracks: lis
                             break
                         else:
                             console.print("\n[red]Failed to dislike[/red]")
+                    elif key == 'o':
+                        _handle_output_device(player, keys)
 
                     # Update progress display
                     position, duration = player.get_progress()
@@ -472,7 +537,9 @@ def _play_playlist_interactive(player: Player, api: YouTubeMusicAPI, tracks: lis
                         pct = int((position / duration) * 40)
                         bar = "█" * pct + "░" * (40 - pct)
                         icon = "⏸" if paused else "▶"
-                        print(f"\r{icon} [{bar}] {format_time(position)}/{format_time(duration)}  ", end="", flush=True)
+                        elapsed = format_time(position)
+                        total = format_time(duration)
+                        print(f"\r{icon} [{bar}] {elapsed}/{total}  ", end="", flush=True)
                 else:
                     # Song finished naturally
                     print()
