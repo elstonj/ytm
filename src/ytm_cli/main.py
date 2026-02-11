@@ -10,9 +10,11 @@
 
 import os
 import select
+import signal
 import sys
 import termios
 import tty
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -55,6 +57,7 @@ app = typer.Typer(
 console = Console()
 
 _tray_mode: bool = False
+_TRAY_PID_FILE = Path.home() / ".config" / "ytm-cli" / "tray.pid"
 
 
 def format_time(seconds: float) -> str:
@@ -64,6 +67,20 @@ def format_time(seconds: float) -> str:
     mins = int(seconds // 60)
     secs = int(seconds % 60)
     return f"{mins}:{secs:02d}"
+
+
+def _tray_is_running() -> bool:
+    """Check if a tray instance is already running via PID file."""
+    if not _TRAY_PID_FILE.exists():
+        return False
+    try:
+        pid = int(_TRAY_PID_FILE.read_text().strip())
+        os.kill(pid, 0)  # signal 0 = check if process exists
+        return True
+    except (ValueError, OSError):
+        # Stale PID file or process gone
+        _TRAY_PID_FILE.unlink(missing_ok=True)
+        return False
 
 
 def _launch_tray(
@@ -80,6 +97,10 @@ def _launch_tray(
         )
         raise typer.Exit(1)
 
+    if _tray_is_running():
+        console.print("[yellow]Tray is already running.[/yellow]")
+        raise typer.Exit(1)
+
     pid = os.fork()
     if pid > 0:
         console.print(f"[green]Tray started[/green] [dim](PID {pid})[/dim]")
@@ -87,13 +108,28 @@ def _launch_tray(
 
     # Child: detach from terminal
     os.setsid()
+
+    # Write PID file
+    _TRAY_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _TRAY_PID_FILE.write_text(str(os.getpid()))
+
+    # Clean up PID file on exit
+    def _cleanup_pid(*_args):
+        _TRAY_PID_FILE.unlink(missing_ok=True)
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, _cleanup_pid)
+
     devnull = os.open(os.devnull, os.O_RDWR)
     os.dup2(devnull, 0)
     os.dup2(devnull, 1)
     os.dup2(devnull, 2)
     os.close(devnull)
 
-    run_tray_mode(queue=queue, api=api, radio_mode=radio_mode)
+    try:
+        run_tray_mode(queue=queue, api=api, radio_mode=radio_mode)
+    finally:
+        _TRAY_PID_FILE.unlink(missing_ok=True)
     os._exit(0)
 
 
