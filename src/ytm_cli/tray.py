@@ -9,6 +9,7 @@
 """System tray UI for ytm-cli playback with rich media player popup."""
 
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QPointF, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPolygonF
@@ -39,6 +40,25 @@ _ACCENT = "#cba6f7"
 _BLUE = "#89b4fa"
 _GREEN = "#a6e3a1"
 _RED = "#f38ba8"
+
+_NOW_PLAYING_FILE = Path.home() / ".config" / "ytm-cli" / "now_playing"
+
+
+def _write_now_playing(text: str) -> None:
+    """Write current track info for status bar consumption."""
+    try:
+        _NOW_PLAYING_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _NOW_PLAYING_FILE.write_text(text)
+    except OSError:
+        pass
+
+
+def _clear_now_playing() -> None:
+    """Remove the now_playing file."""
+    try:
+        _NOW_PLAYING_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _format_time(seconds: float) -> str:
@@ -497,6 +517,7 @@ class PlaybackWorker(QObject):
         self._radio_mode: bool = radio_mode
         self._poll_timer: QTimer | None = None
         self._stopped: bool = False
+        self._current_label: str = ""
 
     @Slot()
     def setup(self) -> None:
@@ -530,9 +551,12 @@ class PlaybackWorker(QObject):
         try:
             self._player.play(video_id)
             self._paused = False
+            title = track.get("title", "Unknown")
+            artist = track.get("artist", "Unknown")
+            self._current_label = f"{artist} - {title}"
             self.track_changed.emit(
-                track.get("title", "Unknown"),
-                track.get("artist", "Unknown"),
+                title,
+                artist,
                 self._queue_index + 1,
                 len(self._queue),
             )
@@ -585,6 +609,14 @@ class PlaybackWorker(QObject):
         if self._player.is_active():
             position, duration = self._player.get_progress()
             self.progress_updated.emit(position, duration, self._paused)
+            icon = "\u23f8" if self._paused else "\u25b6"
+            if duration > 0:
+                _write_now_playing(
+                    f"{icon} {self._current_label}  "
+                    f"{_format_time(position)}/{_format_time(duration)}"
+                )
+            else:
+                _write_now_playing(f"{icon} {self._current_label}")
         else:
             if self._poll_timer:
                 self._poll_timer.stop()
@@ -693,6 +725,7 @@ class PlaybackWorker(QObject):
         if self._poll_timer:
             self._poll_timer.stop()
         self._player.stop()
+        _clear_now_playing()
 
 
 class TrayIcon(QSystemTrayIcon):
@@ -817,3 +850,4 @@ def run_tray_mode(queue: list[dict], api: YouTubeMusicAPI, radio_mode: bool = Fa
     thread.quit()
     thread.wait()
     player.stop()
+    _clear_now_playing()
