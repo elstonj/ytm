@@ -12,6 +12,7 @@ A command-line interface for YouTube Music.
 - Browse your YouTube Music library and playlists
 - Like/dislike songs during playback
 - Vim-style controls
+- System tray mode - rich media player popup with equalizer, volume, and output device selection
 
 ## Requirements
 
@@ -39,6 +40,9 @@ brew install mpv
 git clone https://github.com/elstonj/ytm.git
 cd ytm
 pip install .
+
+# Optional: install with system tray support
+pip install '.[tray]'
 ```
 
 ## Usage
@@ -46,6 +50,9 @@ pip install .
 ```bash
 # Search for music (interactive)
 ytm search "artist or song name"
+
+# Search with radio mode (play similar songs after selection)
+ytm search -r "artist or song name"
 
 # Play a song directly
 ytm play "song name"
@@ -58,9 +65,16 @@ ytm library
 
 # Authenticate to access your library
 ytm auth
+
+# System tray mode (--tray / -t is a global flag, works before or after the command)
+ytm --tray play "song name"
+ytm -t radio "song name"
+ytm play -t "song name"
 ```
 
 ## Playback Controls
+
+### Terminal Mode
 
 - `space` - Pause/unpause
 - `n` - Next track
@@ -68,7 +82,22 @@ ytm auth
 - `+` - Like song
 - `-` - Dislike song (skips to next)
 - `/` - New search (in search mode)
+- `o` - Switch audio output device
 - `Ctrl+C` - Quit
+
+### System Tray Mode (`--tray`)
+
+Add `--tray` or `-t` as a global flag to any command to run playback as a system tray icon. The process automatically backgrounds itself, returning the terminal immediately. Requires PySide6 (`pip install '.[tray]'`).
+
+Click the tray icon to open the media player popup with:
+
+- Track info and queue position
+- Seekable progress slider
+- Transport controls (previous, seek back, play/pause, seek forward, next)
+- Volume slider
+- 10-band equalizer with reset
+- Audio output device selector
+- Like/Dislike, Search, and Quit buttons
 
 ## Authentication
 

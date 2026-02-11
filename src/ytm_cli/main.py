@@ -8,6 +8,7 @@
 #
 """Main CLI entry point."""
 
+import os
 import select
 import sys
 import termios
@@ -41,16 +42,19 @@ class KeyReader:
         if select.select([sys.stdin], [], [], timeout)[0]:
             key = sys.stdin.read(1)
             # Handle Ctrl+C
-            if key == '\x03':
-                return 'ctrl+c'
+            if key == "\x03":
+                return "ctrl+c"
             return key
         return None
+
 
 app = typer.Typer(
     name="ytm",
     help="YouTube Music CLI - Search, play, and manage your music from the terminal.",
 )
 console = Console()
+
+_tray_mode: bool = False
 
 
 def format_time(seconds: float) -> str:
@@ -60,6 +64,37 @@ def format_time(seconds: float) -> str:
     mins = int(seconds // 60)
     secs = int(seconds % 60)
     return f"{mins}:{secs:02d}"
+
+
+def _launch_tray(
+    queue: list,
+    api: YouTubeMusicAPI,
+    radio_mode: bool = False,
+) -> None:
+    """Launch tray mode with lazy import, forking to background."""
+    try:
+        from ytm_cli.tray import run_tray_mode
+    except ImportError:
+        console.print(
+            "[red]PySide6 required for tray mode. Install with: pip install 'ytm-cli[tray]'[/red]"
+        )
+        raise typer.Exit(1)
+
+    pid = os.fork()
+    if pid > 0:
+        console.print(f"[green]Tray started[/green] [dim](PID {pid})[/dim]")
+        raise typer.Exit(0)
+
+    # Child: detach from terminal
+    os.setsid()
+    devnull = os.open(os.devnull, os.O_RDWR)
+    os.dup2(devnull, 0)
+    os.dup2(devnull, 1)
+    os.dup2(devnull, 2)
+    os.close(devnull)
+
+    run_tray_mode(queue=queue, api=api, radio_mode=radio_mode)
+    os._exit(0)
 
 
 def display_tracks(tracks: list, title: str = "Results") -> None:
@@ -111,7 +146,10 @@ def _handle_output_device(player: Player, keys: KeyReader) -> None:
 
 
 def play_with_progress(
-    player: Player, track: dict, api: YouTubeMusicAPI, radio: bool = False,
+    player: Player,
+    track: dict,
+    api: YouTubeMusicAPI,
+    radio: bool = False,
 ) -> str | None:
     """Play a track with progress display.
 
@@ -122,7 +160,7 @@ def play_with_progress(
         console.print("[red]Invalid track[/red]")
         return None
 
-    artist = track.get('artist', 'Unknown')
+    artist = track.get("artist", "Unknown")
     console.print(f"\n[green]▶ Now Playing:[/green] {track['title']} - {artist}")
 
     if radio:
@@ -147,11 +185,9 @@ def play_with_progress(
                 current = queue[queue_index]
                 vid = current.get("videoId")
 
-                artist = current.get('artist', 'Unknown')
+                artist = current.get("artist", "Unknown")
                 pos = f"{queue_index + 1}/{len(queue)}"
-                console.print(
-                    f"\n[cyan]({pos})[/cyan] {current['title']} - {artist}"
-                )
+                console.print(f"\n[cyan]({pos})[/cyan] {current['title']} - {artist}")
 
                 player.play(vid)
                 paused = False
@@ -161,33 +197,33 @@ def play_with_progress(
                     # Check for keypress
                     key = keys.get_key(timeout=0.3)
 
-                    if key == 'ctrl+c':
+                    if key == "ctrl+c":
                         print()  # New line after progress bar
                         player.stop()
                         raise KeyboardInterrupt
-                    elif key == ' ':
+                    elif key == " ":
                         if paused:
                             player.resume()
                             paused = False
                         else:
                             player.pause()
                             paused = True
-                    elif key == 'n':
+                    elif key == "n":
                         player.stop()
                         queue_index += 1
                         console.print("\n[dim]>> Next[/dim]")
                         break
-                    elif key == 'p':
+                    elif key == "p":
                         player.stop()
                         queue_index = max(0, queue_index - 1)
                         console.print("\n[dim]<< Previous[/dim]")
                         break
-                    elif key == '+':
+                    elif key == "+":
                         if vid and api.rate_song(vid, "LIKE"):
                             console.print("\n[green]♥ Liked![/green]")
                         else:
                             console.print("\n[red]Failed to like[/red]")
-                    elif key == '-':
+                    elif key == "-":
                         if vid and api.rate_song(vid, "DISLIKE"):
                             console.print("\n[red]👎 Disliked - skipping[/red]")
                             # Remove from queue
@@ -199,11 +235,11 @@ def play_with_progress(
                             break
                         else:
                             console.print("\n[red]Failed to dislike[/red]")
-                    elif key == '/':
+                    elif key == "/":
                         player.stop()
                         console.print("\n")
-                        return 'search'
-                    elif key == 'o':
+                        return "search"
+                    elif key == "o":
                         _handle_output_device(player, keys)
 
                     # Update progress display
@@ -232,12 +268,10 @@ def play_with_progress(
 def search(
     query: str,
     limit: int = typer.Option(10, "--limit", "-l", help="Number of results"),
-    no_radio: bool = typer.Option(False, "--no-radio", help="Disable radio (similar songs)"),
+    radio: bool = typer.Option(False, "--radio", "-r", help="Enable radio mode (similar songs)"),
 ):
-    """Search for songs and play by number (radio enabled by default)."""
-    radio = not no_radio
+    """Search for songs and play by number."""
     api = YouTubeMusicAPI()
-    player = Player()
 
     current_query = query
 
@@ -261,30 +295,34 @@ def search(
                 num = int(choice)
                 if 1 <= num <= len(results):
                     track = results[num - 1]
-                    result = play_with_progress(player, track, api, radio=radio)
-                    if result == 'search':
-                        # User pressed / to search
-                        new_query = console.input("[bold]Search:[/bold] ").strip()
-                        if new_query:
-                            current_query = new_query
-                            continue
-                    # Playback finished or stopped - exit
-                    break
+                    if _tray_mode:
+                        _launch_tray(queue=[track], api=api, radio_mode=radio)
+                        return
+                    player = Player()
+                    try:
+                        result = play_with_progress(player, track, api, radio=radio)
+                        if result == "search":
+                            # User pressed / to search
+                            new_query = console.input("[bold]Search:[/bold] ").strip()
+                            if new_query:
+                                current_query = new_query
+                                continue
+                        # Playback finished or stopped - exit
+                        break
+                    finally:
+                        player.stop()
                 else:
                     console.print(f"[red]Please enter a number between 1 and {len(results)}[/red]")
             except ValueError:
                 console.print("[red]Please enter a valid number[/red]")
     except KeyboardInterrupt:
         pass
-    finally:
-        player.stop()
 
 
 @app.command()
 def play(query: str):
     """Play a song by search query."""
     api = YouTubeMusicAPI()
-    player = Player()
 
     console.print(f"[dim]Searching for '{query}'...[/dim]")
     results = api.search(query, limit=1)
@@ -298,6 +336,11 @@ def play(query: str):
         console.print("[red]Invalid track[/red]")
         raise typer.Exit(1)
 
+    if _tray_mode:
+        _launch_tray(queue=[track], api=api)
+        return
+
+    player = Player()
     console.print(f"[green]▶ Playing:[/green] {track['title']} - {track.get('artist', 'Unknown')}")
 
     try:
@@ -310,17 +353,17 @@ def play(query: str):
             while player.is_active():
                 key = keys.get_key(timeout=0.3)
 
-                if key == 'ctrl+c':
+                if key == "ctrl+c":
                     print()  # New line after progress bar
                     break
-                elif key == ' ':
+                elif key == " ":
                     if paused:
                         player.resume()
                         paused = False
                     else:
                         player.pause()
                         paused = True
-                elif key == 'o':
+                elif key == "o":
                     _handle_output_device(player, keys)
 
                 position, duration = player.get_progress()
@@ -372,7 +415,6 @@ def auth():
 def library():
     """Browse your YouTube Music library and play playlists."""
     api = YouTubeMusicAPI()
-    player = Player()
 
     if not api.is_authenticated():
         console.print("[red]Please run 'ytm auth' first to authenticate.[/red]")
@@ -392,6 +434,7 @@ def library():
         console.print(table)
         console.print("\n[dim]Enter a number to select, or press Enter to exit[/dim]")
 
+    player = None
     try:
         show_library()
 
@@ -407,7 +450,7 @@ def library():
                     tracks = api.get_liked_songs(limit=100)
                     if tracks:
                         display_tracks(tracks, "♥ Liked Songs")
-                        _play_playlist_interactive(player, api, tracks, "Liked Songs")
+                        _play_playlist_interactive(api, tracks, "Liked Songs")
                     else:
                         console.print("[yellow]No liked songs found.[/yellow]")
                 elif 2 <= num <= len(playlists) + 1:
@@ -416,7 +459,7 @@ def library():
                     tracks = api.get_playlist(playlist["playlistId"])
                     if tracks:
                         display_tracks(tracks, playlist["title"])
-                        _play_playlist_interactive(player, api, tracks, playlist["title"])
+                        _play_playlist_interactive(api, tracks, playlist["title"])
                     else:
                         console.print("[yellow]Playlist is empty.[/yellow]")
                 else:
@@ -424,6 +467,8 @@ def library():
                     console.print(f"[red]Please enter a number between 1 and {max_num}[/red]")
                     continue
 
+                if _tray_mode:
+                    return
                 show_library()
 
             except ValueError:
@@ -431,16 +476,18 @@ def library():
     except KeyboardInterrupt:
         pass
     finally:
-        player.stop()
+        if player:
+            player.stop()
 
 
 def _play_playlist_interactive(
-    player: Player, api: YouTubeMusicAPI, tracks: list, name: str,
+    api: YouTubeMusicAPI,
+    tracks: list,
+    name: str,
 ) -> None:
     """Play a playlist interactively with number selection."""
     console.print(
-        "\n[dim]Enter a track number to start from,"
-        " 'a' to play all, or Enter to go back[/dim]"
+        "\n[dim]Enter a track number to start from, 'a' to play all, or Enter to go back[/dim]"
     )
 
     while True:
@@ -463,8 +510,14 @@ def _play_playlist_interactive(
                 console.print("[red]Please enter a valid number or 'a' for all[/red]")
                 continue
 
+        queue = list(tracks[start_index:])
+
+        if _tray_mode:
+            _launch_tray(queue=queue, api=api)
+            return
+
         # Play from selected track through end
-        queue = list(tracks[start_index:])  # Copy to allow modification
+        player = Player()
         queue_index = 0
         paused = False
 
@@ -474,76 +527,79 @@ def _play_playlist_interactive(
             "  -=dislike  o=output  Ctrl+C=quit[/dim]"
         )
 
-        with KeyReader() as keys:
-            while queue_index < len(queue):
-                current = queue[queue_index]
-                video_id = current.get("videoId")
+        try:
+            with KeyReader() as keys:
+                while queue_index < len(queue):
+                    current = queue[queue_index]
+                    video_id = current.get("videoId")
 
-                console.print(
-                    f"\n[cyan]({start_index + queue_index + 1}/{len(tracks)})[/cyan] "
-                    f"{current['title']} - {current.get('artist', 'Unknown')}"
-                )
+                    console.print(
+                        f"\n[cyan]({start_index + queue_index + 1}/{len(tracks)})[/cyan] "
+                        f"{current['title']} - {current.get('artist', 'Unknown')}"
+                    )
 
-                player.play(video_id)
-                paused = False
+                    player.play(video_id)
+                    paused = False
 
-                # Play loop with key handling
-                while player.is_active():
-                    key = keys.get_key(timeout=0.3)
+                    # Play loop with key handling
+                    while player.is_active():
+                        key = keys.get_key(timeout=0.3)
 
-                    if key == 'ctrl+c':
-                        print()  # New line after progress bar
-                        player.stop()
-                        raise KeyboardInterrupt
-                    elif key == ' ':
-                        if paused:
-                            player.resume()
-                            paused = False
-                        else:
-                            player.pause()
-                            paused = True
-                    elif key == 'n':
-                        player.stop()
-                        queue_index += 1
-                        console.print("\n[dim]>> Next[/dim]")
-                        break
-                    elif key == 'p':
-                        player.stop()
-                        queue_index = max(0, queue_index - 1)
-                        console.print("\n[dim]<< Previous[/dim]")
-                        break
-                    elif key == '+':
-                        if video_id and api.rate_song(video_id, "LIKE"):
-                            console.print("\n[green]♥ Liked![/green]")
-                        else:
-                            console.print("\n[red]Failed to like[/red]")
-                    elif key == '-':
-                        if video_id and api.rate_song(video_id, "DISLIKE"):
-                            console.print("\n[red]👎 Disliked - skipping[/red]")
-                            # Remove from queue
-                            queue = [t for t in queue if t.get("videoId") != video_id]
+                        if key == "ctrl+c":
+                            print()  # New line after progress bar
                             player.stop()
-                            if queue_index >= len(queue):
-                                queue_index = len(queue)
+                            raise KeyboardInterrupt
+                        elif key == " ":
+                            if paused:
+                                player.resume()
+                                paused = False
+                            else:
+                                player.pause()
+                                paused = True
+                        elif key == "n":
+                            player.stop()
+                            queue_index += 1
+                            console.print("\n[dim]>> Next[/dim]")
                             break
-                        else:
-                            console.print("\n[red]Failed to dislike[/red]")
-                    elif key == 'o':
-                        _handle_output_device(player, keys)
+                        elif key == "p":
+                            player.stop()
+                            queue_index = max(0, queue_index - 1)
+                            console.print("\n[dim]<< Previous[/dim]")
+                            break
+                        elif key == "+":
+                            if video_id and api.rate_song(video_id, "LIKE"):
+                                console.print("\n[green]♥ Liked![/green]")
+                            else:
+                                console.print("\n[red]Failed to like[/red]")
+                        elif key == "-":
+                            if video_id and api.rate_song(video_id, "DISLIKE"):
+                                console.print("\n[red]👎 Disliked - skipping[/red]")
+                                # Remove from queue
+                                queue = [t for t in queue if t.get("videoId") != video_id]
+                                player.stop()
+                                if queue_index >= len(queue):
+                                    queue_index = len(queue)
+                                break
+                            else:
+                                console.print("\n[red]Failed to dislike[/red]")
+                        elif key == "o":
+                            _handle_output_device(player, keys)
 
-                    # Update progress display
-                    position, duration = player.get_progress()
-                    if duration > 0:
-                        pct = int((position / duration) * 40)
-                        bar = "█" * pct + "░" * (40 - pct)
-                        icon = "⏸" if paused else "▶"
-                        elapsed = format_time(position)
-                        total = format_time(duration)
-                        print(f"\r{icon} [{bar}] {elapsed}/{total}  ", end="", flush=True)
-                else:
-                    # Song finished naturally
-                    print()
-                    queue_index += 1
+                        # Update progress display
+                        position, duration = player.get_progress()
+                        if duration > 0:
+                            pct = int((position / duration) * 40)
+                            bar = "█" * pct + "░" * (40 - pct)
+                            icon = "⏸" if paused else "▶"
+                            elapsed = format_time(position)
+                            total = format_time(duration)
+                            print(f"\r{icon} [{bar}] {elapsed}/{total}  ", end="", flush=True)
+                    else:
+                        # Song finished naturally
+                        print()
+                        queue_index += 1
+        finally:
+            player.stop()
 
         console.print("[green]Playlist finished[/green]")
         return
@@ -553,7 +609,6 @@ def _play_playlist_interactive(
 def radio(query: str):
     """Play a song and continue with similar songs (radio mode)."""
     api = YouTubeMusicAPI()
-    player = Player()
 
     console.print(f"[dim]Searching for '{query}'...[/dim]")
     results = api.search(query, limit=1)
@@ -562,6 +617,20 @@ def radio(query: str):
         raise typer.Exit(1)
 
     track = results[0]
+
+    if _tray_mode:
+        # Pre-fetch radio tracks for instant queue
+        video_id = track.get("videoId")
+        if video_id:
+            console.print("[dim]Loading radio tracks...[/dim]")
+            radio_tracks = api.get_radio(video_id, limit=50)
+            queue = [track] + [t for t in radio_tracks if t.get("videoId") != video_id]
+        else:
+            queue = [track]
+        _launch_tray(queue=queue, api=api, radio_mode=True)
+        return
+
+    player = Player()
     try:
         play_with_progress(player, track, api, radio=True)
     except KeyboardInterrupt:
@@ -571,8 +640,13 @@ def radio(query: str):
 
 
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context):
+def main(
+    ctx: typer.Context,
+    tray: bool = typer.Option(False, "--tray", "-t", help="Run in system tray mode"),
+):
     """YouTube Music CLI."""
+    global _tray_mode
+    _tray_mode = tray
     if ctx.invoked_subcommand is None:
         console.print("[bold]YouTube Music CLI[/bold]")
         console.print()
