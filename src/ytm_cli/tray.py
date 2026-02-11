@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSlider,
-    QStyle,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
@@ -236,29 +235,24 @@ class MediaPlayerWidget(QWidget):
         transport = QHBoxLayout()
         transport.addStretch()
 
-        btn_prev = QPushButton()
-        btn_prev.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward))
+        btn_prev = QPushButton("\u23ee")
         btn_prev.clicked.connect(self.sig_prev)
         transport.addWidget(btn_prev)
 
-        btn_seek_back = QPushButton()
-        btn_seek_back.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekBackward))
+        btn_seek_back = QPushButton("\u23ea")
         btn_seek_back.clicked.connect(self.sig_seek_backward)
         transport.addWidget(btn_seek_back)
 
-        self._btn_play_pause = QPushButton()
+        self._btn_play_pause = QPushButton("\u25b6")
         self._btn_play_pause.setObjectName("play_pause")
-        self._btn_play_pause.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self._btn_play_pause.clicked.connect(self.sig_toggle_pause)
         transport.addWidget(self._btn_play_pause)
 
-        btn_seek_fwd = QPushButton()
-        btn_seek_fwd.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSeekForward))
+        btn_seek_fwd = QPushButton("\u23e9")
         btn_seek_fwd.clicked.connect(self.sig_seek_forward)
         transport.addWidget(btn_seek_fwd)
 
-        btn_next = QPushButton()
-        btn_next.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward))
+        btn_next = QPushButton("\u23ed")
         btn_next.clicked.connect(self.sig_next)
         transport.addWidget(btn_next)
 
@@ -394,10 +388,7 @@ class MediaPlayerWidget(QWidget):
         self._total_label.setText(_format_time(duration))
         if not self._dragging_progress and duration > 0:
             self._progress_slider.setValue(int((position / duration) * 1000))
-        icon_type = (
-            QStyle.StandardPixmap.SP_MediaPlay if paused else QStyle.StandardPixmap.SP_MediaPause
-        )
-        self._btn_play_pause.setIcon(self.style().standardIcon(icon_type))
+        self._btn_play_pause.setText("\u25b6" if paused else "\u23f8")
 
     @Slot()
     def on_playback_finished(self) -> None:
