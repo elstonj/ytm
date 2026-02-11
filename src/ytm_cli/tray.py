@@ -761,12 +761,6 @@ class TrayIcon(QSystemTrayIcon):
     @Slot(str, str, int, int)
     def on_track_changed(self, title: str, artist: str, pos: int, total: int) -> None:
         self.setToolTip(f"{title} - {artist}")
-        self.showMessage(
-            "ytm-cli",
-            f"{title}\n{artist}",
-            QSystemTrayIcon.MessageIcon.Information,
-            3000,
-        )
 
     @Slot(str, bool)
     def on_rate_result(self, rating: str, success: bool) -> None:
