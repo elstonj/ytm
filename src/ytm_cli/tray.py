@@ -841,6 +841,13 @@ class TrayIcon(QSystemTrayIcon):
         if success:
             label = "Liked!" if rating == "LIKE" else "Disliked"
             self.showMessage("ytm-cli", label, QSystemTrayIcon.MessageIcon.Information, 2000)
+        else:
+            self.showMessage(
+                "ytm-cli",
+                "Rating failed — run 'ytm library' to log in",
+                QSystemTrayIcon.MessageIcon.Warning,
+                3000,
+            )
 
     @Slot(str)
     def on_error(self, message: str) -> None:

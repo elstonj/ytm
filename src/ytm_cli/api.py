@@ -152,6 +152,9 @@ class YouTubeMusicAPI:
         Returns:
             True if successful
         """
+        if not self._authenticated:
+            # Credentials may have been set up in another session; try reloading
+            self._load_client()
         if not self._ytmusic or not self._authenticated:
             return False
 

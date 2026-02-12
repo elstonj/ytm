@@ -289,9 +289,11 @@ def play_with_progress(
                         queue_index = max(0, queue_index - 1)
                         console.print("\n[dim]<< Previous[/dim]")
                         break
-                    elif key == "+":
+                    elif key == "+" or key == "=":
                         if vid and api.rate_song(vid, "LIKE"):
                             console.print("\n[green]♥ Liked![/green]")
+                        elif not api.is_authenticated():
+                            console.print("\n[red]Not logged in — run 'ytm library' to log in[/red]")
                         else:
                             console.print("\n[red]Failed to like[/red]")
                     elif key == "-":
@@ -304,6 +306,8 @@ def play_with_progress(
                             if queue_index >= len(queue):
                                 queue_index = len(queue)  # Will exit while loop
                             break
+                        elif not api.is_authenticated():
+                            console.print("\n[red]Not logged in — run 'ytm library' to log in[/red]")
                         else:
                             console.print("\n[red]Failed to dislike[/red]")
                     elif key == "/":
@@ -617,9 +621,11 @@ def _play_playlist_interactive(
                             queue_index = max(0, queue_index - 1)
                             console.print("\n[dim]<< Previous[/dim]")
                             break
-                        elif key == "+":
+                        elif key == "+" or key == "=":
                             if video_id and api.rate_song(video_id, "LIKE"):
                                 console.print("\n[green]♥ Liked![/green]")
+                            elif not api.is_authenticated():
+                                console.print("\n[red]Not logged in — run 'ytm library' to log in[/red]")
                             else:
                                 console.print("\n[red]Failed to like[/red]")
                         elif key == "-":
@@ -631,6 +637,8 @@ def _play_playlist_interactive(
                                 if queue_index >= len(queue):
                                     queue_index = len(queue)
                                 break
+                            elif not api.is_authenticated():
+                                console.print("\n[red]Not logged in — run 'ytm library' to log in[/red]")
                             else:
                                 console.print("\n[red]Failed to dislike[/red]")
                         elif key == "o":
