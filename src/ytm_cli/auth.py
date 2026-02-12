@@ -13,6 +13,7 @@ import re
 import webbrowser
 from pathlib import Path
 
+from ytmusicapi import setup_oauth
 from ytmusicapi.auth.browser import get_authorization, sapisid_from_cookie
 
 
@@ -41,9 +42,7 @@ def parse_chrome_headers(raw_headers: str) -> dict[str, str]:
 
         # Check if this looks like a header name (starts with letter/colon, no spaces in key part)
         # Chrome format: header names are on their own line, values on the next
-        if line.startswith(":") or (
-            re.match(r"^[A-Za-z][\w-]*$", line) and i + 1 < len(lines)
-        ):
+        if line.startswith(":") or (re.match(r"^[A-Za-z][\w-]*$", line) and i + 1 < len(lines)):
             header_name = line.lower().lstrip(":")
             i += 1
             if i < len(lines):
@@ -139,3 +138,41 @@ def run_auth_flow(auth_file: Path) -> None:
     # Save to file
     with open(auth_file, "w") as f:
         json.dump(auth_headers, f, indent=2)
+
+
+def run_oauth_flow(auth_dir: Path) -> None:
+    """Run the OAuth device code flow.
+
+    Checks for saved client credentials, prompts if missing,
+    then runs ytmusicapi's OAuth setup.
+    """
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    client_file = auth_dir / "oauth_client.json"
+    token_file = auth_dir / "oauth_token.json"
+
+    # Load or prompt for client credentials
+    if client_file.exists():
+        with open(client_file) as f:
+            client = json.load(f)
+        client_id = client["client_id"]
+        client_secret = client["client_secret"]
+    else:
+        print("\nYou need a Google Cloud OAuth client ID for YouTube Data API v3.")
+        print("Create one at: https://console.cloud.google.com/apis/credentials")
+        print("  1. Create a project (or select existing)")
+        print("  2. Enable 'YouTube Data API v3'")
+        print("  3. Create OAuth 2.0 Client ID (type: TV / Limited Input)")
+        print()
+        client_id = input("Client ID: ").strip()
+        client_secret = input("Client secret: ").strip()
+        if not client_id or not client_secret:
+            raise ValueError("Client ID and secret are required")
+        with open(client_file, "w") as f:
+            json.dump({"client_id": client_id, "client_secret": client_secret}, f, indent=2)
+
+    setup_oauth(
+        client_id=client_id,
+        client_secret=client_secret,
+        filepath=str(token_file),
+        open_browser=True,
+    )

@@ -454,42 +454,22 @@ def play(query: str):
 
 
 @app.command()
-def auth():
-    """Authenticate with YouTube Music (required for library access)."""
-    console.print("[bold]YouTube Music Authentication[/bold]\n")
-    console.print(
-        "[dim]Note: Auth is only needed for library features"
-        " (liked songs, playlists, rating).[/dim]"
-    )
-    console.print("[dim]Search and playback work without auth.[/dim]")
-    console.print("A browser will open. Then:")
-    console.print("  1. Sign in to YouTube Music if needed")
-    console.print("  2. Press [bold]F12[/bold] → [bold]Network[/bold] tab")
-    console.print("  3. Refresh the page (F5)")
-    console.print("  4. Click any request to [cyan]music.youtube.com[/cyan]")
-    console.print("  5. Scroll to [bold]Request Headers[/bold], select all, copy")
-    console.print("  6. Paste here and press Enter twice\n")
-
-    try:
-        YouTubeMusicAPI.authenticate()
-        console.print("\n[green]Authentication successful![/green]")
-        console.print(f"Credentials saved to: {YouTubeMusicAPI.AUTH_FILE}")
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Authentication cancelled.[/yellow]")
-        raise typer.Exit(1)
-    except Exception as e:
-        console.print(f"\n[red]Authentication failed: {e}[/red]")
-        raise typer.Exit(1)
-
-
-@app.command()
 def library():
     """Browse your YouTube Music library and play playlists."""
     api = YouTubeMusicAPI()
 
     if not api.is_authenticated():
-        console.print("[red]Please run 'ytm auth' first to authenticate.[/red]")
-        raise typer.Exit(1)
+        console.print("[yellow]Not authenticated. Starting OAuth setup...[/yellow]\n")
+        try:
+            YouTubeMusicAPI.authenticate_oauth()
+            console.print("\n[green]Authentication successful![/green]\n")
+            api = YouTubeMusicAPI()
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Authentication cancelled.[/yellow]")
+            raise typer.Exit(1)
+        except Exception as e:
+            console.print(f"\n[red]Authentication failed: {e}[/red]")
+            raise typer.Exit(1)
 
     console.print("[dim]Loading library...[/dim]")
     playlists = api.get_library_playlists()
@@ -758,10 +738,8 @@ def main(
         console.print("  ytm search <query>  - Search for songs (interactive)")
         console.print("  ytm play <query>    - Play first match")
         console.print("  ytm radio <query>   - Play with radio (similar songs)")
-        console.print("  ytm library         - Browse your library")
+        console.print("  ytm library         - Browse your library (auto-authenticates)")
         console.print("  ytm ctl <action>    - Control running tray (media keys)")
-
-        console.print("  ytm auth            - Authenticate with YouTube Music")
         console.print("  ytm --help          - Show all commands")
 
 

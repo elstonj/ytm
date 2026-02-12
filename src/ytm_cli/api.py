@@ -8,12 +8,13 @@
 #
 """YouTube Music API wrapper using ytmusicapi."""
 
+import json
 from pathlib import Path
 from typing import Any
 
-from ytmusicapi import YTMusic
+from ytmusicapi import OAuthCredentials, YTMusic
 
-from ytm_cli.auth import run_auth_flow
+from ytm_cli.auth import run_oauth_flow
 
 
 class YouTubeMusicAPI:
@@ -21,6 +22,8 @@ class YouTubeMusicAPI:
 
     CONFIG_DIR = Path.home() / ".config" / "ytm-cli"
     AUTH_FILE = CONFIG_DIR / "headers.json"
+    OAUTH_CLIENT_FILE = CONFIG_DIR / "oauth_client.json"
+    OAUTH_TOKEN_FILE = CONFIG_DIR / "oauth_token.json"
 
     def __init__(self) -> None:
         self._ytmusic: YTMusic | None = None
@@ -28,28 +31,45 @@ class YouTubeMusicAPI:
         self._load_client()
 
     def _load_client(self) -> None:
-        """Load the YTMusic client, with auth if available."""
+        """Load the YTMusic client, preferring OAuth over browser auth."""
+        # Try OAuth first
+        if self.OAUTH_TOKEN_FILE.exists() and self.OAUTH_CLIENT_FILE.exists():
+            try:
+                with open(self.OAUTH_CLIENT_FILE) as f:
+                    client = json.load(f)
+                creds = OAuthCredentials(
+                    client_id=client["client_id"],
+                    client_secret=client["client_secret"],
+                )
+                self._ytmusic = YTMusic(
+                    auth=str(self.OAUTH_TOKEN_FILE),
+                    oauth_credentials=creds,
+                )
+                self._authenticated = True
+                return
+            except Exception:
+                pass
+
+        # Fall back to browser auth
         if self.AUTH_FILE.exists():
             try:
                 self._ytmusic = YTMusic(str(self.AUTH_FILE))
                 self._authenticated = True
+                return
             except Exception:
-                # If auth fails, fall back to unauthenticated
-                self._ytmusic = YTMusic()
-        else:
-            self._ytmusic = YTMusic()
+                pass
+
+        # Unauthenticated
+        self._ytmusic = YTMusic()
 
     def is_authenticated(self) -> bool:
         """Check if the user is authenticated."""
         return self._authenticated
 
     @classmethod
-    def authenticate(cls) -> None:
-        """Run browser-based authentication flow.
-
-        Opens YouTube Music in browser and prompts user to paste request headers.
-        """
-        run_auth_flow(cls.AUTH_FILE)
+    def authenticate_oauth(cls) -> None:
+        """Run OAuth device code flow and reload client."""
+        run_oauth_flow(cls.CONFIG_DIR)
 
     def search(
         self, query: str, filter_type: str | None = "songs", limit: int = 10
@@ -64,11 +84,7 @@ class YouTubeMusicAPI:
             {
                 "videoId": item.get("videoId"),
                 "title": item.get("title", "Unknown"),
-                "artist": (
-                    item["artists"][0]["name"]
-                    if item.get("artists")
-                    else "Unknown"
-                ),
+                "artist": (item["artists"][0]["name"] if item.get("artists") else "Unknown"),
                 "album": item.get("album", {}).get("name") if item.get("album") else None,
                 "duration": item.get("duration"),
             }
@@ -107,16 +123,16 @@ class YouTubeMusicAPI:
             video_id = track.get("videoId")
             if video_id and video_id not in seen:
                 seen.add(video_id)
-                result.append({
-                    "videoId": video_id,
-                    "title": track.get("title", "Unknown"),
-                    "artist": (
-                        track["artists"][0]["name"]
-                        if track.get("artists")
-                        else "Unknown"
-                    ),
-                    "duration": track.get("duration"),
-                })
+                result.append(
+                    {
+                        "videoId": video_id,
+                        "title": track.get("title", "Unknown"),
+                        "artist": (
+                            track["artists"][0]["name"] if track.get("artists") else "Unknown"
+                        ),
+                        "duration": track.get("duration"),
+                    }
+                )
         return result
 
     def get_song_info(self, video_id: str) -> dict[str, Any] | None:
@@ -161,16 +177,16 @@ class YouTubeMusicAPI:
                 video_id = track.get("videoId")
                 if video_id and video_id not in seen:
                     seen.add(video_id)
-                    result.append({
-                        "videoId": video_id,
-                        "title": track.get("title", "Unknown"),
-                        "artist": (
-                            track["artists"][0]["name"]
-                            if track.get("artists")
-                            else "Unknown"
-                        ),
-                        "duration": track.get("duration"),
-                    })
+                    result.append(
+                        {
+                            "videoId": video_id,
+                            "title": track.get("title", "Unknown"),
+                            "artist": (
+                                track["artists"][0]["name"] if track.get("artists") else "Unknown"
+                            ),
+                            "duration": track.get("duration"),
+                        }
+                    )
             return result
         except Exception:
             return []
@@ -191,16 +207,16 @@ class YouTubeMusicAPI:
                 vid = track.get("videoId")
                 if vid and vid not in seen:
                     seen.add(vid)
-                    result.append({
-                        "videoId": vid,
-                        "title": track.get("title", "Unknown"),
-                        "artist": (
-                            track["artists"][0]["name"]
-                            if track.get("artists")
-                            else "Unknown"
-                        ),
-                        "duration": track.get("length"),
-                    })
+                    result.append(
+                        {
+                            "videoId": vid,
+                            "title": track.get("title", "Unknown"),
+                            "artist": (
+                                track["artists"][0]["name"] if track.get("artists") else "Unknown"
+                            ),
+                            "duration": track.get("length"),
+                        }
+                    )
             return result
         except Exception:
             return []
