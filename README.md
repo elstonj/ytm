@@ -62,11 +62,8 @@ ytm play "song name"
 # Play with radio (similar songs)
 ytm radio "song name"
 
-# Browse your library
+# Browse your library (auto-authenticates via OAuth if needed)
 ytm library
-
-# Authenticate to access your library
-ytm auth
 
 # System tray mode (--tray / -t is a global flag, works before or after the command)
 ytm --tray play "song name"
@@ -133,11 +130,15 @@ Volume keys already control PulseAudio directly, and the tray slider stays in sy
 
 Authentication is only needed for library features (liked songs, playlists, rating). Search and playback work without auth.
 
-To authenticate, run `ytm auth` and follow the prompts:
-1. A browser will open to YouTube Music
-2. Open DevTools (F12) → Network tab
-3. Refresh the page and click any request to music.youtube.com
-4. Copy the Request Headers and paste into the terminal
+Authentication happens automatically via OAuth when you first use `ytm library`. You'll need a Google Cloud OAuth client ID:
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Create a project (or select an existing one)
+3. Enable the **YouTube Data API v3**
+4. Create an **OAuth 2.0 Client ID** (type: TV / Limited Input)
+5. Run `ytm library` — enter your client ID and secret when prompted, then authorize in the browser
+
+Your client credentials are saved so you only enter them once. OAuth tokens refresh automatically.
 
 Credentials are stored in `~/.config/ytm-cli/`.
 
