@@ -330,6 +330,58 @@ class Player:
         result = self._send_command(["af", "set", ""])
         return result is not None and result.get("error") == "success"
 
+    @staticmethod
+    def get_pulse_volume() -> int:
+        """Get PulseAudio default sink volume (0-150)."""
+        try:
+            result = subprocess.run(
+                ["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            # Output like: "Volume: front-left: 65536 / 100% / ..."
+            for part in result.stdout.split("/"):
+                part = part.strip()
+                if part.endswith("%"):
+                    return int(part[:-1])
+        except Exception:
+            pass
+        return 100
+
+    @staticmethod
+    def set_pulse_volume(vol: int) -> None:
+        """Set PulseAudio default sink volume (0-150)."""
+        vol = max(0, min(150, vol))
+        subprocess.run(
+            ["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{vol}%"],
+            capture_output=True,
+            timeout=2,
+        )
+
+    @staticmethod
+    def toggle_pulse_mute() -> None:
+        """Toggle PulseAudio default sink mute."""
+        subprocess.run(
+            ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"],
+            capture_output=True,
+            timeout=2,
+        )
+
+    @staticmethod
+    def get_pulse_mute() -> bool:
+        """Check if PulseAudio default sink is muted."""
+        try:
+            result = subprocess.run(
+                ["pactl", "get-sink-mute", "@DEFAULT_SINK@"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            return "yes" in result.stdout.lower()
+        except Exception:
+            return False
+
     def seek_absolute(self, position: float) -> None:
         """Seek to an absolute position in seconds."""
         self.seek(position, relative=False)

@@ -11,8 +11,10 @@
 import os
 import select
 import signal
+import socket
 import sys
 import termios
+import time
 import tty
 from pathlib import Path
 
@@ -58,6 +60,7 @@ console = Console()
 
 _tray_mode: bool = False
 _TRAY_PID_FILE = Path.home() / ".config" / "ytm-cli" / "tray.pid"
+_CTL_SOCKET_PATH = "/tmp/ytm-cli-ctl.sock"
 
 
 def format_time(seconds: float) -> str:
@@ -69,18 +72,44 @@ def format_time(seconds: float) -> str:
     return f"{mins}:{secs:02d}"
 
 
-def _tray_is_running() -> bool:
-    """Check if a tray instance is already running via PID file."""
+def _kill_existing_tray() -> None:
+    """Kill any existing tray instance, waiting up to 3s for it to exit."""
     if not _TRAY_PID_FILE.exists():
-        return False
+        return
     try:
         pid = int(_TRAY_PID_FILE.read_text().strip())
-        os.kill(pid, 0)  # signal 0 = check if process exists
-        return True
+        # Send quit via control socket so playback stops cleanly
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            sock.connect(_CTL_SOCKET_PATH)
+            sock.sendall(b"quit")
+            sock.close()
+        except OSError:
+            pass
+        # Wait for process to exit, fall back to SIGTERM
+        for _ in range(30):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(10):
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.1)
     except (ValueError, OSError):
-        # Stale PID file or process gone
-        _TRAY_PID_FILE.unlink(missing_ok=True)
-        return False
+        pass
+    # Clean up stale files
+    _TRAY_PID_FILE.unlink(missing_ok=True)
+    try:
+        os.unlink(_CTL_SOCKET_PATH)
+    except OSError:
+        pass
 
 
 def _launch_tray(
@@ -97,9 +126,7 @@ def _launch_tray(
         )
         raise typer.Exit(1)
 
-    if _tray_is_running():
-        console.print("[yellow]Tray is already running.[/yellow]")
-        raise typer.Exit(1)
+    _kill_existing_tray()
 
     pid = os.fork()
     if pid > 0:
@@ -113,9 +140,13 @@ def _launch_tray(
     _TRAY_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     _TRAY_PID_FILE.write_text(str(os.getpid()))
 
-    # Clean up PID file on exit
+    # Clean up PID file and control socket on exit
     def _cleanup_pid(*_args):
         _TRAY_PID_FILE.unlink(missing_ok=True)
+        try:
+            os.unlink(_CTL_SOCKET_PATH)
+        except OSError:
+            pass
         os._exit(0)
 
     signal.signal(signal.SIGTERM, _cleanup_pid)
@@ -130,6 +161,10 @@ def _launch_tray(
         run_tray_mode(queue=queue, api=api, radio_mode=radio_mode)
     finally:
         _TRAY_PID_FILE.unlink(missing_ok=True)
+        try:
+            os.unlink(_CTL_SOCKET_PATH)
+        except OSError:
+            pass
     os._exit(0)
 
 
@@ -675,6 +710,39 @@ def radio(query: str):
         player.stop()
 
 
+_CTL_ACTIONS = [
+    "toggle-pause",
+    "next",
+    "prev",
+    "seek-fwd",
+    "seek-back",
+    "vol-up",
+    "vol-down",
+    "mute",
+    "quit",
+]
+
+
+@app.command()
+def ctl(
+    action: str = typer.Argument(help=f"Action: {', '.join(_CTL_ACTIONS)}"),
+):
+    """Send a control command to the running tray instance."""
+    if action not in _CTL_ACTIONS:
+        console.print(f"[red]Unknown action '{action}'.[/red]")
+        console.print(f"[dim]Available: {', '.join(_CTL_ACTIONS)}[/dim]")
+        raise typer.Exit(1)
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        sock.connect(_CTL_SOCKET_PATH)
+        sock.sendall(action.encode("utf-8"))
+        sock.close()
+    except (ConnectionRefusedError, FileNotFoundError, OSError):
+        console.print("[red]Tray is not running.[/red]")
+        raise typer.Exit(1)
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -691,6 +759,8 @@ def main(
         console.print("  ytm play <query>    - Play first match")
         console.print("  ytm radio <query>   - Play with radio (similar songs)")
         console.print("  ytm library         - Browse your library")
+        console.print("  ytm ctl <action>    - Control running tray (media keys)")
+
         console.print("  ytm auth            - Authenticate with YouTube Music")
         console.print("  ytm --help          - Show all commands")
 

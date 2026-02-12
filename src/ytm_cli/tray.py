@@ -8,10 +8,12 @@
 #
 """System tray UI for ytm-cli playback with rich media player popup."""
 
+import os
+import socket as stdlib_socket
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPointF, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QPointF, QSocketNotifier, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
@@ -59,6 +61,66 @@ def _clear_now_playing() -> None:
         _NOW_PLAYING_FILE.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+_CTL_SOCKET_PATH = "/tmp/ytm-cli-ctl.sock"
+
+
+class ControlServer(QObject):
+    """Unix domain socket server for receiving control commands."""
+
+    command_received = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._server_sock: stdlib_socket.socket | None = None
+        self._notifier: QSocketNotifier | None = None
+
+    def start(self) -> None:
+        """Bind and listen on the control socket."""
+        path = _CTL_SOCKET_PATH
+        # Remove stale socket
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+        self._server_sock = stdlib_socket.socket(stdlib_socket.AF_UNIX, stdlib_socket.SOCK_STREAM)
+        self._server_sock.setblocking(False)
+        self._server_sock.bind(path)
+        self._server_sock.listen(4)
+
+        self._notifier = QSocketNotifier(self._server_sock.fileno(), QSocketNotifier.Type.Read)
+        self._notifier.activated.connect(self._on_ready_read)
+
+    def stop(self) -> None:
+        """Shut down the control socket."""
+        if self._notifier:
+            self._notifier.setEnabled(False)
+            self._notifier = None
+        if self._server_sock:
+            self._server_sock.close()
+            self._server_sock = None
+        try:
+            os.unlink(_CTL_SOCKET_PATH)
+        except OSError:
+            pass
+
+    @Slot()
+    def _on_ready_read(self) -> None:
+        """Accept a connection and read the command."""
+        if not self._server_sock:
+            return
+        try:
+            conn, _ = self._server_sock.accept()
+            data = conn.recv(256)
+            conn.close()
+            if data:
+                cmd = data.decode("utf-8", errors="replace").strip()
+                if cmd:
+                    self.command_received.emit(cmd)
+        except OSError:
+            pass
 
 
 def _format_time(seconds: float) -> str:
@@ -301,7 +363,7 @@ class MediaPlayerWidget(QWidget):
         vol_icon.setFixedWidth(24)
         vol_row.addWidget(vol_icon)
         self._volume_slider = QSlider(Qt.Orientation.Horizontal)
-        self._volume_slider.setRange(0, 100)
+        self._volume_slider.setRange(0, 150)
         self._volume_slider.setValue(100)
         self._volume_slider.valueChanged.connect(self._on_volume_changed)
         vol_row.addWidget(self._volume_slider, 1)
@@ -518,6 +580,7 @@ class PlaybackWorker(QObject):
         self._poll_timer: QTimer | None = None
         self._stopped: bool = False
         self._current_label: str = ""
+        self._last_pulse_vol: int = -1
 
     @Slot()
     def setup(self) -> None:
@@ -550,6 +613,7 @@ class PlaybackWorker(QObject):
 
         try:
             self._player.play(video_id)
+            self._player.set_volume(100)
             self._paused = False
             title = track.get("title", "Unknown")
             artist = track.get("artist", "Unknown")
@@ -560,6 +624,10 @@ class PlaybackWorker(QObject):
                 self._queue_index + 1,
                 len(self._queue),
             )
+            # Emit initial PulseAudio volume
+            vol = Player.get_pulse_volume()
+            self._last_pulse_vol = vol
+            self.volume_changed.emit(vol)
             if self._poll_timer:
                 self._poll_timer.start()
         except Exception as e:
@@ -603,7 +671,7 @@ class PlaybackWorker(QObject):
 
     @Slot()
     def _poll_tick(self) -> None:
-        """Poll mpv for progress."""
+        """Poll mpv for progress and PulseAudio volume."""
         if self._stopped:
             return
         if self._player.is_active():
@@ -617,6 +685,11 @@ class PlaybackWorker(QObject):
                 )
             else:
                 _write_now_playing(f"{icon} {self._current_label}")
+            # Sync PulseAudio volume to slider
+            vol = Player.get_pulse_volume()
+            if vol != self._last_pulse_vol:
+                self._last_pulse_vol = vol
+                self.volume_changed.emit(vol)
         else:
             if self._poll_timer:
                 self._poll_timer.stop()
@@ -660,7 +733,8 @@ class PlaybackWorker(QObject):
 
     @Slot(int)
     def set_volume(self, vol: int) -> None:
-        self._player.set_volume(vol)
+        Player.set_pulse_volume(vol)
+        self._last_pulse_vol = vol
         self.volume_changed.emit(vol)
 
     @Slot(list)
@@ -828,6 +902,28 @@ def run_tray_mode(queue: list[dict], api: YouTubeMusicAPI, radio_mode: bool = Fa
     popup.sig_request_devices.connect(worker.request_devices)
     popup.sig_set_output_device.connect(worker.set_output_device)
 
+    # Control socket server for external commands (media keys, ytm ctl)
+    ctl_server = ControlServer()
+    ctl_server.start()
+
+    def _dispatch_ctl(cmd: str) -> None:
+        dispatch = {
+            "toggle-pause": popup.sig_toggle_pause.emit,
+            "next": popup.sig_next.emit,
+            "prev": popup.sig_prev.emit,
+            "seek-fwd": popup.sig_seek_forward.emit,
+            "seek-back": popup.sig_seek_backward.emit,
+            "vol-up": lambda: popup.sig_set_volume.emit(min(150, Player.get_pulse_volume() + 5)),
+            "vol-down": lambda: popup.sig_set_volume.emit(max(0, Player.get_pulse_volume() - 5)),
+            "mute": lambda: Player.toggle_pulse_mute(),
+            "quit": lambda: (popup.sig_stop.emit(), QApplication.quit()),
+        }
+        action = dispatch.get(cmd)
+        if action:
+            action()
+
+    ctl_server.command_received.connect(_dispatch_ctl)
+
     # Thread lifecycle
     thread.started.connect(worker.setup)
     thread.started.connect(worker.start_playback)
@@ -840,6 +936,7 @@ def run_tray_mode(queue: list[dict], api: YouTubeMusicAPI, radio_mode: bool = Fa
     app.exec()
 
     # Cleanup
+    ctl_server.stop()
     worker.request_stop()
     thread.quit()
     thread.wait()

@@ -13,6 +13,8 @@ A command-line interface for YouTube Music.
 - Like/dislike songs during playback
 - Vim-style controls
 - System tray mode - rich media player popup with equalizer, volume, and output device selection
+- Remote control via `ytm ctl` - bind hardware media keys to control the tray
+- Unified PulseAudio volume - tray slider and hardware keys control the same volume
 
 ## Requirements
 
@@ -70,6 +72,17 @@ ytm auth
 ytm --tray play "song name"
 ytm -t radio "song name"
 ytm play -t "song name"
+
+# Control the running tray instance
+ytm ctl toggle-pause
+ytm ctl next
+ytm ctl prev
+ytm ctl seek-fwd
+ytm ctl seek-back
+ytm ctl vol-up
+ytm ctl vol-down
+ytm ctl mute
+ytm ctl quit
 ```
 
 ## Playback Controls
@@ -98,6 +111,23 @@ Click the tray icon to open the media player popup with:
 - 10-band equalizer with reset
 - Audio output device selector
 - Like/Dislike, Search, and Quit buttons
+
+Re-running `ytm --tray` automatically replaces the existing instance.
+
+### Media Key Integration (i3)
+
+Add these bindings to your i3 config to control the tray with hardware media keys:
+
+```
+bindsym XF86AudioPlay exec --no-startup-id ytm ctl toggle-pause
+bindsym XF86AudioPause exec --no-startup-id ytm ctl toggle-pause
+bindsym XF86AudioNext exec --no-startup-id ytm ctl next
+bindsym XF86AudioPrev exec --no-startup-id ytm ctl prev
+bindsym XF86AudioRewind exec --no-startup-id ytm ctl seek-back
+bindsym XF86AudioForward exec --no-startup-id ytm ctl seek-fwd
+```
+
+Volume keys already control PulseAudio directly, and the tray slider stays in sync.
 
 ## Authentication
 
