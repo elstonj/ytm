@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QEvent,
     QObject,
     QPointF,
     QProcess,
@@ -425,26 +424,6 @@ class AudioLevelMonitor(QObject):
             self.levels_updated.emit(list(self._levels))
 
 
-class _ClickAwayFilter(QObject):
-    """App-level event filter that hides a widget on outside mouse press."""
-
-    def __init__(self, target: QWidget, parent=None):
-        super().__init__(parent)
-        self._target = target
-
-    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
-        if (
-            event.type() == QEvent.Type.MouseButtonPress
-            and self._target.isVisible()
-        ):
-            # Check if the click is outside the popup
-            mouse = event  # type: QMouseEvent
-            global_pos = mouse.globalPosition().toPoint()
-            if not self._target.geometry().contains(global_pos):
-                self._target.hide()
-        return False
-
-
 class MediaPlayerWidget(QWidget):
     """Dark-themed frameless popup media player widget."""
 
@@ -474,10 +453,6 @@ class MediaPlayerWidget(QWidget):
         self.setStyleSheet(_STYLESHEET)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
-        # Dismiss popup when clicking outside it
-        self._click_filter = _ClickAwayFilter(self)
-        QApplication.instance().installEventFilter(self._click_filter)
-
         self._dragging_progress = False
         self._current_duration = 0.0
         self._devices: list[dict[str, str]] = []
@@ -485,6 +460,19 @@ class MediaPlayerWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
+
+        # --- Header with minimize button ---
+        header_row = QHBoxLayout()
+        btn_minimize = QPushButton("\u2014")  # em dash as minimize icon
+        btn_minimize.setFixedSize(20, 20)
+        btn_minimize.setStyleSheet(
+            f"font-size: 14px; font-weight: bold; color: {_DIM_TEXT};"
+            f"background: {_SURFACE}; border-radius: 10px; padding: 0;"
+        )
+        btn_minimize.clicked.connect(self.hide)
+        header_row.addWidget(btn_minimize)
+        header_row.addStretch()
+        layout.addLayout(header_row)
 
         # --- Track info ---
         info_row = QHBoxLayout()
@@ -715,27 +703,27 @@ class MediaPlayerWidget(QWidget):
         self.adjustSize()
 
     def show_near_tray(self, tray_geometry) -> None:
-        """Position the popup above the system tray area and show."""
+        """Position the popup above the system tray icon and show."""
         self.adjustSize()
-        screen = QApplication.primaryScreen()
-        if not screen:
-            self.show()
-            return
-        sr = screen.availableGeometry()
         if tray_geometry and not tray_geometry.isNull():
-            # Center horizontally on tray icon
             x = tray_geometry.x() + tray_geometry.width() // 2 - self.width() // 2
-            # Place above the available geometry bottom edge (above the panel)
-            y = sr.y() + sr.height() - self.height() - 8
-            # If tray is at the top, place below it instead
-            if tray_geometry.y() < sr.y() + sr.height() // 2:
-                y = sr.y() + 8
-            # Keep on screen horizontally
-            x = max(sr.x(), min(x, sr.x() + sr.width() - self.width()))
+            y = tray_geometry.y() - self.height() - 8
+            # Keep on screen
+            screen = QApplication.primaryScreen()
+            if screen:
+                sr = screen.availableGeometry()
+                x = max(sr.x(), min(x, sr.x() + sr.width() - self.width()))
+                if y < sr.y():
+                    y = tray_geometry.y() + tray_geometry.height() + 8
+            self.move(x, y)
         else:
-            x = sr.x() + sr.width() - self.width() - 16
-            y = sr.y() + sr.height() - self.height() - 16
-        self.move(x, y)
+            # Fallback: bottom-right of screen
+            screen = QApplication.primaryScreen()
+            if screen:
+                sr = screen.availableGeometry()
+                x = sr.x() + sr.width() - self.width() - 16
+                y = sr.y() + sr.height() - self.height() - 16
+                self.move(x, y)
         self.show()
 
 
