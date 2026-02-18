@@ -253,12 +253,14 @@ class LevelBar(QWidget):
 
     _LABEL_W = 70
     _BAR_H = 8
+    _MIN_W = 200
 
     def __init__(self, label: str = "", parent=None):
         super().__init__(parent)
         self._level: float = 0.0
         self._label = label
         self.setFixedHeight(self._BAR_H + 4)
+        self.setMinimumWidth(self._MIN_W)
 
     def set_level(self, level: float) -> None:
         self._level = max(0.0, min(1.0, level))
@@ -271,10 +273,11 @@ class LevelBar(QWidget):
     def paintEvent(self, event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = self.width()
         h = self.height()
         bar_y = (h - self._BAR_H) // 2
         bar_x = self._LABEL_W + 4
-        bar_w = self.width() - bar_x - 2
+        bar_w = max(0, w - bar_x - 2)
         # Label
         p.setPen(QColor(_DIM_TEXT))
         p.setFont(self.font())
@@ -299,14 +302,22 @@ class LevelBar(QWidget):
 
 
 class AudioLevelMonitor(QObject):
-    """Monitors PulseAudio output levels using parec."""
+    """Monitors PulseAudio output levels using parec.
+
+    Uses a QTimer to poll parec stdout at ~30ms intervals rather than
+    relying on readyReadStandardOutput (which fires infrequently due
+    to QProcess internal buffering).
+    """
 
     levels_updated = Signal(list)
     channels_changed = Signal(list)
 
+    _POLL_MS = 30  # ~33 fps
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._process: QProcess | None = None
+        self._timer: QTimer | None = None
         self._channel_names: list[str] = []
         self._channel_count: int = 2
         self._levels: list[float] = []
@@ -319,10 +330,11 @@ class AudioLevelMonitor(QObject):
             proc.start("pactl", ["get-sink-volume", "@DEFAULT_SINK@"])
             proc.waitForFinished(2000)
             output = proc.readAllStandardOutput().data().decode()
-            # Parse channel names from output like "Volume: front-left: 65536 / 100% / ..."
+            # Parse channel names like "front-left: 65536 / 100% / ..."
             names = re.findall(r"(\w[\w-]*):", output)
-            # Filter to actual channel names (not "Volume")
-            channel_names = [n for n in names if n.lower() not in ("volume",)]
+            channel_names = [
+                n for n in names if n.lower() not in ("volume",)
+            ]
             if channel_names:
                 self._channel_names = channel_names
                 self._channel_count = len(channel_names)
@@ -342,7 +354,6 @@ class AudioLevelMonitor(QObject):
         self.channels_changed.emit(self._channel_names)
 
         self._process = QProcess(self)
-        self._process.readyReadStandardOutput.connect(self._on_data)
         self._process.start("parec", [
             "--raw",
             "--format=s16le",
@@ -351,9 +362,17 @@ class AudioLevelMonitor(QObject):
             "-d", "@DEFAULT_MONITOR@",
         ])
 
+        self._timer = QTimer(self)
+        self._timer.setInterval(self._POLL_MS)
+        self._timer.timeout.connect(self._poll)
+        self._timer.start()
+
     @Slot()
     def stop(self) -> None:
         """Stop monitoring."""
+        if self._timer:
+            self._timer.stop()
+            self._timer = None
         if self._process:
             self._process.kill()
             self._process.waitForFinished(1000)
@@ -369,13 +388,19 @@ class AudioLevelMonitor(QObject):
         QTimer.singleShot(500, self.start)
 
     @Slot()
-    def _on_data(self) -> None:
+    def _poll(self) -> None:
         if not self._process:
             return
-        self._buf += self._process.readAllStandardOutput().data()
-        # Process in chunks: each frame is channel_count * 2 bytes (s16le)
+        # Check if parec exited
+        if self._process.state() == QProcess.ProcessState.NotRunning:
+            self.stop()
+            return
+        raw = self._process.readAllStandardOutput().data()
+        if not raw:
+            return
+        self._buf += raw
         frame_size = self._channel_count * 2
-        # Process ~20ms of audio at a time (44100 * 0.02 = 882 frames)
+        # ~20ms of audio per chunk (44100 * 0.02 = 882 frames)
         chunk_size = 882 * frame_size
         # Drain all complete chunks, emit only the latest levels
         updated = False
@@ -393,8 +418,7 @@ class AudioLevelMonitor(QObject):
                     peak = max(abs(s) for s in ch_samples) / 32768.0
                 else:
                     peak = 0.0
-                # Smooth decay
-                self._levels[ch] = max(peak, self._levels[ch] * 0.85)
+                self._levels[ch] = max(peak, self._levels[ch] * 0.8)
             updated = True
         if updated:
             self.levels_updated.emit(list(self._levels))
