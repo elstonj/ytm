@@ -463,15 +463,15 @@ class MediaPlayerWidget(QWidget):
 
         # --- Header with minimize button ---
         header_row = QHBoxLayout()
+        header_row.addStretch()
         btn_minimize = QPushButton("\u2014")  # em dash as minimize icon
-        btn_minimize.setFixedSize(20, 20)
+        btn_minimize.setFixedSize(16, 16)
         btn_minimize.setStyleSheet(
-            f"font-size: 14px; font-weight: bold; color: {_DIM_TEXT};"
-            f"background: {_SURFACE}; border-radius: 10px; padding: 0;"
+            f"font-size: 10px; font-weight: bold; color: {_DIM_TEXT};"
+            f"background: {_SURFACE}; border-radius: 8px; padding: 0;"
         )
         btn_minimize.clicked.connect(self.hide)
         header_row.addWidget(btn_minimize)
-        header_row.addStretch()
         layout.addLayout(header_row)
 
         # --- Track info ---
