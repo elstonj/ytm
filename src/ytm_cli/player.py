@@ -17,9 +17,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-EQ_FREQUENCIES = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-
-
 class Player:
     """Handle audio playback for YouTube Music tracks with IPC control."""
 
@@ -308,27 +305,6 @@ class Player:
             sink = name[len("pulse/") :]
             subprocess.run(["pactl", "set-default-sink", sink], capture_output=True)
         return result
-
-    def set_equalizer(self, bands: list[float]) -> bool:
-        """Apply a 10-band equalizer via lavfi audio filters.
-
-        Args:
-            bands: 10 gain values in dB (-12 to +12), one per EQ_FREQUENCIES band.
-        """
-        if len(bands) != len(EQ_FREQUENCIES):
-            return False
-        parts = []
-        for freq, gain in zip(EQ_FREQUENCIES, bands):
-            gain = max(-12.0, min(12.0, gain))
-            parts.append(f"equalizer=f={freq}:width_type=o:w=1.4:g={gain}")
-        chain = ",".join(parts)
-        result = self._send_command(["af", "set", f"lavfi=[{chain}]"])
-        return result is not None and result.get("error") == "success"
-
-    def clear_equalizer(self) -> bool:
-        """Remove all audio filters."""
-        result = self._send_command(["af", "set", ""])
-        return result is not None and result.get("error") == "success"
 
     @staticmethod
     def get_pulse_volume() -> int:

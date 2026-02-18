@@ -8,12 +8,24 @@
 #
 """System tray UI for ytm-cli playback with rich media player popup."""
 
+import array
 import os
+import re
 import socket as stdlib_socket
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPointF, QSocketNotifier, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import (
+    QObject,
+    QPointF,
+    QProcess,
+    QSocketNotifier,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
@@ -188,23 +200,6 @@ QSlider::sub-page:horizontal {{
     border-radius: 3px;
 }}
 
-QSlider::groove:vertical {{
-    width: 6px;
-    background: {_SURFACE};
-    border-radius: 3px;
-}}
-QSlider::handle:vertical {{
-    background: {_BLUE};
-    width: 10px;
-    height: 10px;
-    margin: 0 -2px;
-    border-radius: 5px;
-}}
-QSlider::sub-page:vertical {{
-    background: {_BLUE};
-    border-radius: 3px;
-}}
-
 QPushButton {{
     background: transparent;
     color: {_TEXT};
@@ -253,8 +248,152 @@ QComboBox QAbstractItemView {{
 }}
 """
 
-# Short labels for EQ frequencies
-_EQ_LABELS = ["32", "64", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"]
+class LevelBar(QWidget):
+    """Vertical audio level bar with color gradient."""
+
+    _BAR_HEIGHT = 90
+
+    def __init__(self, label: str = "", parent=None):
+        super().__init__(parent)
+        self._level: float = 0.0
+        self._label = label
+        self.setFixedSize(20, self._BAR_HEIGHT + 18)
+
+    def set_level(self, level: float) -> None:
+        self._level = max(0.0, min(1.0, level))
+        self.update()
+
+    def set_label(self, label: str) -> None:
+        self._label = label
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = self.width()
+        bar_h = self._BAR_HEIGHT
+        bar_x = (w - 12) // 2
+        # Background
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(_SURFACE))
+        p.drawRoundedRect(bar_x, 0, 12, bar_h, 3, 3)
+        # Filled portion
+        fill_h = int(bar_h * self._level)
+        if fill_h > 0:
+            if self._level < 0.6:
+                color = QColor(_GREEN)
+            elif self._level < 0.85:
+                color = QColor("#f9e2af")  # Catppuccin yellow
+            else:
+                color = QColor(_RED)
+            p.setBrush(color)
+            p.drawRoundedRect(bar_x, bar_h - fill_h, 12, fill_h, 3, 3)
+        # Label
+        p.setPen(QColor(_DIM_TEXT))
+        p.setFont(self.font())
+        align = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+        p.drawText(0, bar_h + 2, w, 16, align, self._label)
+        p.end()
+
+
+class AudioLevelMonitor(QObject):
+    """Monitors PulseAudio output levels using parec."""
+
+    levels_updated = Signal(list)
+    channels_changed = Signal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._process: QProcess | None = None
+        self._channel_names: list[str] = []
+        self._channel_count: int = 2
+        self._levels: list[float] = []
+        self._buf = b""
+
+    def _detect_channels(self) -> None:
+        """Detect channel count and names from default sink volume."""
+        try:
+            proc = QProcess()
+            proc.start("pactl", ["get-sink-volume", "@DEFAULT_SINK@"])
+            proc.waitForFinished(2000)
+            output = proc.readAllStandardOutput().data().decode()
+            # Parse channel names from output like "Volume: front-left: 65536 / 100% / ..."
+            names = re.findall(r"(\w[\w-]*):", output)
+            # Filter to actual channel names (not "Volume")
+            channel_names = [n for n in names if n.lower() not in ("volume",)]
+            if channel_names:
+                self._channel_names = channel_names
+                self._channel_count = len(channel_names)
+            else:
+                self._channel_names = ["L", "R"]
+                self._channel_count = 2
+        except Exception:
+            self._channel_names = ["L", "R"]
+            self._channel_count = 2
+        self._levels = [0.0] * self._channel_count
+
+    @Slot()
+    def start(self) -> None:
+        """Start monitoring audio levels."""
+        self.stop()
+        self._detect_channels()
+        self.channels_changed.emit(self._channel_names)
+
+        self._process = QProcess(self)
+        self._process.readyReadStandardOutput.connect(self._on_data)
+        self._process.start("parec", [
+            "--raw",
+            "--format=s16le",
+            f"--channels={self._channel_count}",
+            "--rate=44100",
+            "-d", "@DEFAULT_MONITOR@",
+        ])
+
+    @Slot()
+    def stop(self) -> None:
+        """Stop monitoring."""
+        if self._process:
+            self._process.kill()
+            self._process.waitForFinished(1000)
+            self._process = None
+        self._buf = b""
+        self._levels = [0.0] * self._channel_count
+
+    @Slot()
+    def restart(self) -> None:
+        """Restart monitoring (e.g. after device switch)."""
+        self.stop()
+        # Small delay to let PulseAudio settle after device switch
+        QTimer.singleShot(500, self.start)
+
+    @Slot()
+    def _on_data(self) -> None:
+        if not self._process:
+            return
+        self._buf += self._process.readAllStandardOutput().data()
+        # Process in chunks: each frame is channel_count * 2 bytes (s16le)
+        frame_size = self._channel_count * 2
+        # Process ~50ms of audio at a time (44100 * 0.05 = 2205 frames)
+        chunk_size = 2205 * frame_size
+        if len(self._buf) < chunk_size:
+            return
+        data = self._buf[:chunk_size]
+        self._buf = self._buf[chunk_size:]
+        try:
+            samples = array.array("h", data)
+        except Exception:
+            return
+        # Peak detection per channel
+        n_channels = self._channel_count
+        for ch in range(n_channels):
+            ch_samples = samples[ch::n_channels]
+            if ch_samples:
+                peak = max(abs(s) for s in ch_samples) / 32768.0
+            else:
+                peak = 0.0
+            # Smooth decay
+            self._levels[ch] = max(peak, self._levels[ch] * 0.7)
+        self.levels_updated.emit(list(self._levels))
 
 
 class MediaPlayerWidget(QWidget):
@@ -271,13 +410,17 @@ class MediaPlayerWidget(QWidget):
     sig_rate_dislike = Signal()
     sig_search = Signal(str)
     sig_stop = Signal()
-    sig_set_equalizer = Signal(list)
     sig_request_devices = Signal()
     sig_set_output_device = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setFixedWidth(380)
         self.setStyleSheet(_STYLESHEET)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -374,37 +517,15 @@ class MediaPlayerWidget(QWidget):
         vol_row.addWidget(self._volume_label)
         layout.addLayout(vol_row)
 
-        # --- Equalizer ---
-        eq_header = QHBoxLayout()
-        eq_title = QLabel("Equalizer")
-        eq_title.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {_TEXT};")
-        eq_header.addWidget(eq_title)
-        eq_header.addStretch()
-        btn_reset_eq = QPushButton("Reset")
-        btn_reset_eq.setFixedHeight(24)
-        btn_reset_eq.clicked.connect(self._reset_equalizer)
-        eq_header.addWidget(btn_reset_eq)
-        layout.addLayout(eq_header)
+        # --- Output Levels ---
+        levels_header = QLabel("Output Levels")
+        levels_header.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {_TEXT};")
+        layout.addWidget(levels_header)
 
-        eq_sliders_row = QHBoxLayout()
-        eq_sliders_row.setSpacing(4)
-        self._eq_sliders: list[QSlider] = []
-        for i, label_text in enumerate(_EQ_LABELS):
-            col = QVBoxLayout()
-            col.setSpacing(2)
-            slider = QSlider(Qt.Orientation.Vertical)
-            slider.setRange(-120, 120)
-            slider.setValue(0)
-            slider.setFixedHeight(100)
-            slider.valueChanged.connect(self._on_eq_changed)
-            col.addWidget(slider, 0, Qt.AlignmentFlag.AlignHCenter)
-            lbl = QLabel(label_text)
-            lbl.setStyleSheet(f"font-size: 9px; color: {_DIM_TEXT};")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            col.addWidget(lbl)
-            eq_sliders_row.addLayout(col)
-            self._eq_sliders.append(slider)
-        layout.addLayout(eq_sliders_row)
+        self._levels_row = QHBoxLayout()
+        self._levels_row.setSpacing(4)
+        self._level_bars: list[LevelBar] = []
+        layout.addLayout(self._levels_row)
 
         # --- Output device ---
         dev_row = QHBoxLayout()
@@ -447,17 +568,6 @@ class MediaPlayerWidget(QWidget):
     def _on_volume_changed(self, value: int) -> None:
         self._volume_label.setText(f"{value}%")
         self.sig_set_volume.emit(value)
-
-    def _on_eq_changed(self) -> None:
-        bands = [s.value() / 10.0 for s in self._eq_sliders]
-        self.sig_set_equalizer.emit(bands)
-
-    def _reset_equalizer(self) -> None:
-        for s in self._eq_sliders:
-            s.blockSignals(True)
-            s.setValue(0)
-            s.blockSignals(False)
-        self.sig_set_equalizer.emit([0.0] * 10)
 
     def _on_device_changed(self, index: int) -> None:
         if 0 <= index < len(self._devices):
@@ -532,6 +642,28 @@ class MediaPlayerWidget(QWidget):
     def on_error(self, message: str) -> None:
         pass  # Notification handled by TrayIcon
 
+    @Slot(list)
+    def on_levels_updated(self, levels: list) -> None:
+        for i, bar in enumerate(self._level_bars):
+            if i < len(levels):
+                bar.set_level(levels[i])
+
+    @Slot(list)
+    def on_channels_changed(self, channel_names: list) -> None:
+        # Remove old bars
+        for bar in self._level_bars:
+            self._levels_row.removeWidget(bar)
+            bar.deleteLater()
+        self._level_bars.clear()
+        # Add stretch before bars for centering
+        self._levels_row.addStretch()
+        for name in channel_names:
+            bar = LevelBar(name)
+            self._levels_row.addWidget(bar)
+            self._level_bars.append(bar)
+        self._levels_row.addStretch()
+        self.adjustSize()
+
     def show_near_tray(self, tray_geometry) -> None:
         """Position the popup near the system tray icon and show."""
         self.adjustSize()
@@ -568,6 +700,8 @@ class PlaybackWorker(QObject):
     error_occurred = Signal(str)
     devices_listed = Signal(list)
     device_changed = Signal(str)
+    playback_started = Signal()
+    output_device_switched = Signal()
 
     def __init__(self, player: Player, api: YouTubeMusicAPI, queue: list, radio_mode: bool):
         super().__init__()
@@ -630,6 +764,7 @@ class PlaybackWorker(QObject):
             self.volume_changed.emit(vol)
             if self._poll_timer:
                 self._poll_timer.start()
+            self.playback_started.emit()
         except Exception as e:
             self.error_occurred.emit(str(e))
             self._advance_queue()
@@ -716,8 +851,8 @@ class PlaybackWorker(QObject):
         self._player.stop()
         if self._poll_timer:
             self._poll_timer.stop()
-        self._queue_index = max(0, self._queue_index - 2)
-        self._advance_queue()
+        self._queue_index = max(0, self._queue_index - 1)
+        self._play_current()
 
     @Slot()
     def seek_forward(self) -> None:
@@ -737,10 +872,6 @@ class PlaybackWorker(QObject):
         self._last_pulse_vol = vol
         self.volume_changed.emit(vol)
 
-    @Slot(list)
-    def set_equalizer(self, bands: list) -> None:
-        self._player.set_equalizer(bands)
-
     @Slot()
     def request_devices(self) -> None:
         devices = self._player.get_audio_devices()
@@ -750,6 +881,7 @@ class PlaybackWorker(QObject):
     def set_output_device(self, name: str) -> None:
         self._player.set_audio_device(name)
         self.device_changed.emit(name)
+        self.output_device_switched.emit()
 
     @Slot()
     def rate_like(self) -> None:
@@ -905,9 +1037,16 @@ def run_tray_mode(queue: list[dict], api: YouTubeMusicAPI, radio_mode: bool = Fa
     popup.sig_rate_dislike.connect(worker.rate_dislike)
     popup.sig_search.connect(worker.do_search)
     popup.sig_stop.connect(worker.request_stop)
-    popup.sig_set_equalizer.connect(worker.set_equalizer)
     popup.sig_request_devices.connect(worker.request_devices)
     popup.sig_set_output_device.connect(worker.set_output_device)
+
+    # Audio level monitor (runs in main thread via QProcess)
+    level_monitor = AudioLevelMonitor()
+    worker.playback_started.connect(level_monitor.start)
+    worker.playback_finished.connect(level_monitor.stop)
+    worker.output_device_switched.connect(level_monitor.restart)
+    level_monitor.levels_updated.connect(popup.on_levels_updated)
+    level_monitor.channels_changed.connect(popup.on_channels_changed)
 
     # Control socket server for external commands (media keys, ytm ctl)
     ctl_server = ControlServer()
@@ -943,6 +1082,7 @@ def run_tray_mode(queue: list[dict], api: YouTubeMusicAPI, radio_mode: bool = Fa
     app.exec()
 
     # Cleanup
+    level_monitor.stop()
     ctl_server.stop()
     worker.request_stop()
     thread.quit()
