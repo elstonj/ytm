@@ -249,15 +249,16 @@ QComboBox QAbstractItemView {{
 """
 
 class LevelBar(QWidget):
-    """Vertical audio level bar with color gradient."""
+    """Horizontal audio level bar with color gradient."""
 
-    _BAR_HEIGHT = 90
+    _LABEL_W = 70
+    _BAR_H = 8
 
     def __init__(self, label: str = "", parent=None):
         super().__init__(parent)
         self._level: float = 0.0
         self._label = label
-        self.setFixedSize(20, self._BAR_HEIGHT + 18)
+        self.setFixedHeight(self._BAR_H + 4)
 
     def set_level(self, level: float) -> None:
         self._level = max(0.0, min(1.0, level))
@@ -270,16 +271,22 @@ class LevelBar(QWidget):
     def paintEvent(self, event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w = self.width()
-        bar_h = self._BAR_HEIGHT
-        bar_x = (w - 12) // 2
+        h = self.height()
+        bar_y = (h - self._BAR_H) // 2
+        bar_x = self._LABEL_W + 4
+        bar_w = self.width() - bar_x - 2
+        # Label
+        p.setPen(QColor(_DIM_TEXT))
+        p.setFont(self.font())
+        align = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        p.drawText(0, 0, self._LABEL_W, h, align, self._label)
         # Background
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(_SURFACE))
-        p.drawRoundedRect(bar_x, 0, 12, bar_h, 3, 3)
+        p.drawRoundedRect(bar_x, bar_y, bar_w, self._BAR_H, 3, 3)
         # Filled portion
-        fill_h = int(bar_h * self._level)
-        if fill_h > 0:
+        fill_w = int(bar_w * self._level)
+        if fill_w > 0:
             if self._level < 0.6:
                 color = QColor(_GREEN)
             elif self._level < 0.85:
@@ -287,12 +294,7 @@ class LevelBar(QWidget):
             else:
                 color = QColor(_RED)
             p.setBrush(color)
-            p.drawRoundedRect(bar_x, bar_h - fill_h, 12, fill_h, 3, 3)
-        # Label
-        p.setPen(QColor(_DIM_TEXT))
-        p.setFont(self.font())
-        align = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
-        p.drawText(0, bar_h + 2, w, 16, align, self._label)
+            p.drawRoundedRect(bar_x, bar_y, fill_w, self._BAR_H, 3, 3)
         p.end()
 
 
@@ -373,27 +375,29 @@ class AudioLevelMonitor(QObject):
         self._buf += self._process.readAllStandardOutput().data()
         # Process in chunks: each frame is channel_count * 2 bytes (s16le)
         frame_size = self._channel_count * 2
-        # Process ~50ms of audio at a time (44100 * 0.05 = 2205 frames)
-        chunk_size = 2205 * frame_size
-        if len(self._buf) < chunk_size:
-            return
-        data = self._buf[:chunk_size]
-        self._buf = self._buf[chunk_size:]
-        try:
-            samples = array.array("h", data)
-        except Exception:
-            return
-        # Peak detection per channel
-        n_channels = self._channel_count
-        for ch in range(n_channels):
-            ch_samples = samples[ch::n_channels]
-            if ch_samples:
-                peak = max(abs(s) for s in ch_samples) / 32768.0
-            else:
-                peak = 0.0
-            # Smooth decay
-            self._levels[ch] = max(peak, self._levels[ch] * 0.7)
-        self.levels_updated.emit(list(self._levels))
+        # Process ~20ms of audio at a time (44100 * 0.02 = 882 frames)
+        chunk_size = 882 * frame_size
+        # Drain all complete chunks, emit only the latest levels
+        updated = False
+        while len(self._buf) >= chunk_size:
+            data = self._buf[:chunk_size]
+            self._buf = self._buf[chunk_size:]
+            try:
+                samples = array.array("h", data)
+            except Exception:
+                continue
+            n_channels = self._channel_count
+            for ch in range(n_channels):
+                ch_samples = samples[ch::n_channels]
+                if ch_samples:
+                    peak = max(abs(s) for s in ch_samples) / 32768.0
+                else:
+                    peak = 0.0
+                # Smooth decay
+                self._levels[ch] = max(peak, self._levels[ch] * 0.85)
+            updated = True
+        if updated:
+            self.levels_updated.emit(list(self._levels))
 
 
 class MediaPlayerWidget(QWidget):
@@ -522,10 +526,10 @@ class MediaPlayerWidget(QWidget):
         levels_header.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {_TEXT};")
         layout.addWidget(levels_header)
 
-        self._levels_row = QHBoxLayout()
-        self._levels_row.setSpacing(4)
+        self._levels_col = QVBoxLayout()
+        self._levels_col.setSpacing(2)
         self._level_bars: list[LevelBar] = []
-        layout.addLayout(self._levels_row)
+        layout.addLayout(self._levels_col)
 
         # --- Output device ---
         dev_row = QHBoxLayout()
@@ -652,16 +656,13 @@ class MediaPlayerWidget(QWidget):
     def on_channels_changed(self, channel_names: list) -> None:
         # Remove old bars
         for bar in self._level_bars:
-            self._levels_row.removeWidget(bar)
+            self._levels_col.removeWidget(bar)
             bar.deleteLater()
         self._level_bars.clear()
-        # Add stretch before bars for centering
-        self._levels_row.addStretch()
         for name in channel_names:
             bar = LevelBar(name)
-            self._levels_row.addWidget(bar)
+            self._levels_col.addWidget(bar)
             self._level_bars.append(bar)
-        self._levels_row.addStretch()
         self.adjustSize()
 
     def show_near_tray(self, tray_geometry) -> None:
