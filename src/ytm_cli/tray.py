@@ -796,8 +796,8 @@ class PlaybackWorker(QObject):
                 self._queue_index + 1,
                 len(self._queue),
             )
-            # Emit initial PulseAudio volume
-            vol = Player.get_pulse_volume()
+            # Emit initial PulseAudio volume (show 0 when muted)
+            vol = 0 if Player.get_pulse_mute() else Player.get_pulse_volume()
             self._last_pulse_vol = vol
             self.volume_changed.emit(vol)
             if self._poll_timer:
@@ -858,8 +858,8 @@ class PlaybackWorker(QObject):
                 )
             else:
                 _write_now_playing(f"{icon} {self._current_label}")
-            # Sync PulseAudio volume to slider
-            vol = Player.get_pulse_volume()
+            # Sync PulseAudio volume to slider (show 0 when muted)
+            vol = 0 if Player.get_pulse_mute() else Player.get_pulse_volume()
             if vol != self._last_pulse_vol:
                 self._last_pulse_vol = vol
                 self.volume_changed.emit(vol)
@@ -1099,7 +1099,10 @@ def run_tray_mode(queue: list[dict], api: YouTubeMusicAPI, radio_mode: bool = Fa
             "seek-back": popup.sig_seek_backward.emit,
             "vol-up": lambda: popup.sig_set_volume.emit(min(150, Player.get_pulse_volume() + 5)),
             "vol-down": lambda: popup.sig_set_volume.emit(max(0, Player.get_pulse_volume() - 5)),
-            "mute": lambda: Player.toggle_pulse_mute(),
+            "mute": lambda: (
+                Player.toggle_pulse_mute(),
+                popup.on_volume_changed(0 if Player.get_pulse_mute() else Player.get_pulse_volume()),
+            ),
             "quit": lambda: (popup.sig_stop.emit(), QApplication.quit()),
         }
         action = dispatch.get(cmd)
