@@ -9,9 +9,12 @@
 """System tray UI for ytm-cli playback with rich media player popup."""
 
 import array
+import json
 import os
 import re
+import shutil
 import socket as stdlib_socket
+import subprocess
 import sys
 from pathlib import Path
 
@@ -33,6 +36,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QMenu,
     QPushButton,
     QSlider,
     QStyle,
@@ -142,6 +146,76 @@ def _format_time(seconds: float) -> str:
     mins = int(seconds // 60)
     secs = int(seconds % 60)
     return f"{mins}:{secs:02d}"
+
+
+#: Matches the sway/i3 rules users need to target the popup window.
+APP_ID = "ytm-cli"
+
+#: Gap between the popup and the screen edge / tray icon.
+_POPUP_MARGIN = 8
+
+
+def _is_wayland() -> bool:
+    return QApplication.platformName().startswith("wayland")
+
+
+def _on_sway() -> bool:
+    """True when sway is driving the session, whichever Qt backend we use."""
+    return bool(os.environ.get("SWAYSOCK")) and bool(shutil.which("swaymsg"))
+
+
+def _window_selector() -> str:
+    """sway criteria for our popup: XWayland windows match on class, not app_id."""
+    return f'app_id="{APP_ID}"' if _is_wayland() else f'class="{APP_ID}"'
+
+
+def _sway_usable_rect() -> tuple[int, int, int, int] | None:
+    """Return the focused sway workspace rect (x, y, w, h), bars excluded."""
+    if not _on_sway():
+        return None
+    try:
+        result = subprocess.run(
+            ["swaymsg", "-t", "get_workspaces", "-r"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        for ws in json.loads(result.stdout):
+            if ws.get("focused"):
+                r = ws["rect"]
+                return r["x"], r["y"], r["width"], r["height"]
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def _sway_move(x: int, y: int) -> bool:
+    """Ask sway to place our popup, since Wayland clients cannot self-position.
+
+    Returns False if the window is not in sway's tree yet, so the caller can
+    retry: the compositor only sees it once the surface has been mapped.
+
+    The window is pulled onto the current workspace and made sticky: sway maps
+    it wherever the process was launched from, which is often a workspace the
+    user is not looking at.
+    """
+    if not _on_sway():
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "swaymsg",
+                f"[{_window_selector()}] floating enable,"
+                " move container to workspace current,"
+                f" sticky enable, move position {x} {y}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return all(r.get("success") for r in json.loads(result.stdout))
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        return False
 
 
 def _make_fallback_icon() -> QIcon:
@@ -705,26 +779,50 @@ class MediaPlayerWidget(QWidget):
     def show_near_tray(self, tray_geometry) -> None:
         """Position the popup above the system tray icon and show."""
         self.adjustSize()
+
+        # sway: move() is ignored and the tray reports no geometry, so show
+        # first, then have the compositor place the mapped window. Keyed on the
+        # compositor rather than the Qt backend, so an XWayland session
+        # (QT_QPA_PLATFORM=xcb) gets placed too.
+        if _on_sway():
+            self.show()
+            self._position_via_compositor()
+            return
+
+        # X11 (i3): the XEmbed tray reports the icon's real geometry and the
+        # window manager honours move(), so place it against the icon.
+        screen = QApplication.primaryScreen()
+        sr = screen.availableGeometry() if screen else None
         if tray_geometry and not tray_geometry.isNull():
             x = tray_geometry.x() + tray_geometry.width() // 2 - self.width() // 2
-            y = tray_geometry.y() - self.height() - 8
-            # Keep on screen
-            screen = QApplication.primaryScreen()
-            if screen:
-                sr = screen.availableGeometry()
+            y = tray_geometry.y() - self.height() - _POPUP_MARGIN
+            if sr:
                 x = max(sr.x(), min(x, sr.x() + sr.width() - self.width()))
                 if y < sr.y():
-                    y = tray_geometry.y() + tray_geometry.height() + 8
+                    y = tray_geometry.y() + tray_geometry.height() + _POPUP_MARGIN
             self.move(x, y)
-        else:
-            # Fallback: bottom-right of screen
-            screen = QApplication.primaryScreen()
-            if screen:
-                sr = screen.availableGeometry()
-                x = sr.x() + sr.width() - self.width() - 16
-                y = sr.y() + sr.height() - self.height() - 16
-                self.move(x, y)
+        elif sr:
+            # Tray gave us nothing: bottom-right, where trays usually live.
+            self.move(
+                sr.x() + sr.width() - self.width() - _POPUP_MARGIN,
+                sr.y() + sr.height() - self.height() - _POPUP_MARGIN,
+            )
         self.show()
+
+    def _position_via_compositor(self, attempt: int = 0) -> None:
+        """Place the popup at the tray end of the bar via sway IPC."""
+        rect = _sway_usable_rect()
+        if not rect:
+            return
+        rx, ry, rw, rh = rect
+        placed = _sway_move(
+            rx + rw - self.width() - _POPUP_MARGIN,
+            ry + rh - self.height() - _POPUP_MARGIN,
+        )
+        # The surface is not mapped the instant show() returns, so the first
+        # attempts can find no matching node.
+        if not placed and attempt < 20:
+            QTimer.singleShot(50, lambda: self._position_via_compositor(attempt + 1))
 
 
 class PlaybackWorker(QObject):
@@ -985,22 +1083,42 @@ class TrayIcon(QSystemTrayIcon):
         self.setToolTip("ytm-cli")
 
         self._popup = MediaPlayerWidget()
+        self.setContextMenu(self._build_menu())
 
         self.activated.connect(self._on_activated)
+
+    def _build_menu(self) -> QMenu:
+        """Build the right-click menu.
+
+        Hosts that render DBusMenu (waybar, most Wayland bars) will not call
+        the ContextMenu method when the item reports no menu, so an actual
+        QMenu is what makes right-click do anything there.
+        """
+        menu = QMenu()
+        popup = self._popup
+        menu.addAction("Show/Hide Player", self._toggle_popup)
+        menu.addSeparator()
+        menu.addAction("Play/Pause", popup.sig_toggle_pause.emit)
+        menu.addAction("Next", popup.sig_next.emit)
+        menu.addAction("Previous", popup.sig_prev.emit)
+        menu.addSeparator()
+        menu.addAction("Quit", lambda: (popup.sig_stop.emit(), QApplication.quit()))
+        return menu
+
+    def _toggle_popup(self) -> None:
+        if self._popup.isVisible():
+            self._popup.hide()
+        else:
+            self._popup.show_near_tray(self.geometry())
 
     @property
     def popup(self) -> MediaPlayerWidget:
         return self._popup
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason in (
-            QSystemTrayIcon.ActivationReason.Trigger,
-            QSystemTrayIcon.ActivationReason.Context,
-        ):
-            if self._popup.isVisible():
-                self._popup.hide()
-            else:
-                self._popup.show_near_tray(self.geometry())
+        # Context is handled by the menu set in __init__.
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._toggle_popup()
 
     @Slot(str, str, int, int)
     def on_track_changed(self, title: str, artist: str, pos: int, total: int) -> None:
@@ -1031,7 +1149,10 @@ class TrayIcon(QSystemTrayIcon):
 def run_tray_mode(queue: list[dict], api: YouTubeMusicAPI, radio_mode: bool = False) -> None:
     """Launch the system tray UI and play the given queue."""
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName("ytm-cli")
+    app.setApplicationName(APP_ID)
+    # Gives the popup a stable Wayland app_id / X11 WM_CLASS instead of
+    # "python3", so compositor rules (and our own sway IPC) can target it.
+    app.setDesktopFileName(APP_ID)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
         print("Error: System tray is not available on this system.")

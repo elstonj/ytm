@@ -60,6 +60,7 @@ console = Console()
 
 _tray_mode: bool = False
 _TRAY_PID_FILE = Path.home() / ".config" / "ytm-cli" / "tray.pid"
+_TRAY_LOG_FILE = Path.home() / ".config" / "ytm-cli" / "tray.log"
 _CTL_SOCKET_PATH = "/tmp/ytm-cli-ctl.sock"
 
 
@@ -122,8 +123,18 @@ def _launch_tray(
         from ytm_cli.tray import run_tray_mode
     except ImportError:
         console.print(
-            "[red]PySide6 required for tray mode. Install with: pip install 'ytm-cli[tray]'[/red]"
+            "[red]PySide6 required for tray mode.[/red]\n"
+            "Reinstall from the ytm repo with the tray extra:\n"
+            "  [cyan]pip install --user '.\\[tray]'[/cyan]"
         )
+        raise typer.Exit(1)
+
+    # Check external tools up front: once we fork, the child's output goes to
+    # the log file and a startup failure would look like a tray that never
+    # appeared.
+    missing = Player.missing_dependency()
+    if missing:
+        console.print(f"[red]{missing}[/red]")
         raise typer.Exit(1)
 
     _kill_existing_tray()
@@ -151,11 +162,15 @@ def _launch_tray(
 
     signal.signal(signal.SIGTERM, _cleanup_pid)
 
-    devnull = os.open(os.devnull, os.O_RDWR)
+    # stdin from /dev/null, but keep output: a crash in the detached child is
+    # otherwise invisible.
+    devnull = os.open(os.devnull, os.O_RDONLY)
     os.dup2(devnull, 0)
-    os.dup2(devnull, 1)
-    os.dup2(devnull, 2)
     os.close(devnull)
+    log = os.open(_TRAY_LOG_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    os.dup2(log, 1)
+    os.dup2(log, 2)
+    os.close(log)
 
     try:
         run_tray_mode(queue=queue, api=api, radio_mode=radio_mode)

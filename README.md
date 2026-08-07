@@ -97,9 +97,9 @@ ytm ctl quit
 
 ### System Tray Mode (`--tray`)
 
-Add `--tray` or `-t` as a global flag to any command to run playback as a system tray icon. The process automatically backgrounds itself, returning the terminal immediately. Requires PySide6 (`pip install '.[tray]'`).
+Add `--tray` or `-t` as a global flag to any command to run playback as a system tray icon. The process automatically backgrounds itself, returning the terminal immediately. Requires PySide6 (`pip install '.[tray]'`) and `mpv` for playback.
 
-Click the tray icon to open the media player popup with:
+Left-click the tray icon to open the media player popup; right-click for a menu (Show/Hide Player, Play/Pause, Next, Previous, Quit). The popup contains:
 
 - Track info and queue position
 - Seekable progress slider
@@ -109,7 +109,26 @@ Click the tray icon to open the media player popup with:
 - Audio output device selector
 - Like/Dislike, Search, and Quit buttons
 
-Re-running `ytm --tray` automatically replaces the existing instance.
+Re-running `ytm --tray` automatically replaces the existing instance. If the tray fails to start, the reason is in `~/.config/ytm-cli/tray.log`.
+
+#### X11 (i3) and Wayland (sway)
+
+Both are supported, but the tray icon and the popup work differently on each:
+
+| | X11 / i3 | Wayland / sway |
+|---|---|---|
+| Tray protocol | XEmbed (i3bar) or StatusNotifierItem | StatusNotifierItem — needs a bar that renders it, e.g. `waybar` with the `tray` module enabled |
+| Right-click menu | drawn by Qt | drawn by the bar via DBusMenu |
+| Popup placement | positioned against the tray icon | Wayland forbids clients from positioning themselves, so `ytm` asks sway over IPC to float the popup above the tray, pull it onto the current workspace, and make it sticky |
+
+The popup window has the app ID / class `ytm-cli`, so you can override placement yourself:
+
+```
+# sway
+for_window [app_id="ytm-cli"] floating enable, sticky enable, move position 100 100
+# i3
+for_window [class="ytm-cli"] floating enable, move position 100 100
+```
 
 ### Media Key Integration (i3)
 

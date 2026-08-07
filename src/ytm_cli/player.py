@@ -27,14 +27,22 @@ class Player:
         self._duration: float = 0
         self._check_dependencies()
 
-    def _check_dependencies(self) -> None:
-        """Check that required external tools are available."""
+    @staticmethod
+    def missing_dependency() -> str | None:
+        """Return an error message if a required external tool is missing."""
         if not shutil.which("mpv"):
-            raise RuntimeError(
+            return (
                 "mpv is required for audio playback. "
                 "Install it with: sudo apt install mpv (Ubuntu/Debian) "
                 "or brew install mpv (macOS)"
             )
+        return None
+
+    def _check_dependencies(self) -> None:
+        """Check that required external tools are available."""
+        error = self.missing_dependency()
+        if error:
+            raise RuntimeError(error)
 
     def _update_cookies_file(self, headers_file: Path, cookies_file: Path) -> None:
         """Update cookies.txt from headers.json if headers is newer."""

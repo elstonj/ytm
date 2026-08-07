@@ -99,10 +99,12 @@ git clone --depth 1 https://github.com/elstonj/ytm.git
 cd ytm
 
 if command -v pip3 &> /dev/null; then
-    pip3 install --user .
+    PIP="pip3"
 else
-    python3 -m pip install --user .
+    PIP="python3 -m pip"
 fi
+
+$PIP install --user '.[tray]'
 
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
